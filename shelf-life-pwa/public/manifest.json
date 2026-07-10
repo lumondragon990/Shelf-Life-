@@ -1,0 +1,17 @@
+{
+  "name": "Shelf Life — Your shelf, not a race",
+  "short_name": "Shelf Life",
+  "description": "The reading app that never makes you feel slow. Track books, take the personality quiz, earn gentle rewards, and read together as a class.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4EEDD",
+  "theme_color": "#22334D",
+  "categories": ["education", "books"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
