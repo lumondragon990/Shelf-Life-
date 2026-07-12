@@ -55,8 +55,21 @@ const PICKS = [
   { title: "The House in the Cerulean Sea", author: "TJ Klune", pages: 396, tags: ["Fantasy", "Heartwarming", "For adults"], aud: "adult", blurb: "Like a warm hug in book form — magical children and found family." },
   { title: "Of Mice and Men", author: "John Steinbeck", pages: 107, tags: ["Classics", "Short reads", "For adults"], aud: "adult", blurb: "An American classic you can finish in two sittings — and never forget." },
   { title: "The Old Man and the Sea", author: "Ernest Hemingway", pages: 127, tags: ["Classics", "Short reads", "Adventure", "For adults"], aud: "adult", blurb: "One old fisherman, one giant fish. Hemingway's Nobel-winning knockout." },
+  // ----- En español -----
+  { title: "El Principito", author: "Antoine de Saint-Exupéry", pages: 96, tags: ["En español", "Short reads", "Classics"], aud: "all", lang: "es", blurb: "El libro que la gente relee toda la vida. Corto, tierno y sabio." },
+  { title: "Cuentos de la selva", author: "Horacio Quiroga", pages: 120, tags: ["En español", "Short reads", "Adventure"], aud: "all", lang: "es", blurb: "Cuentos cortos de animales de la selva — perfectos para leer uno por noche." },
+  { title: "Diario de Greg: Un renacuajo", author: "Jeff Kinney", pages: 224, tags: ["En español", "Funny", "Pictures inside"], aud: "kids", lang: "es", blurb: "Mitad cómic, mitad diario, pura risa. Ideal para agarrar confianza." },
+  { title: "Esperanza renace", author: "Pam Muñoz Ryan", pages: 288, tags: ["En español", "Heartwarming"], aud: "kids", lang: "es", blurb: "Una historia de perder todo y volver a empezar. Hermosa y llena de esperanza." },
+  { title: "Cajas de cartón", author: "Francisco Jiménez", pages: 134, tags: ["En español", "Short reads", "Nonfiction"], aud: "all", lang: "es", blurb: "Relatos reales de una familia migrante en California. Corto, honesto, inolvidable." },
+  { title: "La casa en Mango Street", author: "Sandra Cisneros", pages: 112, tags: ["En español", "Short reads", "Classics"], aud: "all", lang: "es", blurb: "Capítulos diminutos, sentimientos enormes. Se puede leer uno en el desayuno." },
+  { title: "El alquimista", author: "Paulo Coelho", pages: 192, tags: ["En español", "Classics", "Short reads"], aud: "all", lang: "es", blurb: "Frases sencillas, viaje enorme. Un favorito para volver a leer en español." },
+  { title: "Crónica de una muerte anunciada", author: "Gabriel García Márquez", pages: 122, tags: ["En español", "Mystery", "Classics", "Short reads", "For adults"], aud: "adult", lang: "es", blurb: "Todos saben que lo van a matar. García Márquez en 122 páginas perfectas." },
+  { title: "Aura", author: "Carlos Fuentes", pages: 62, tags: ["En español", "Short reads", "For adults"], aud: "adult", lang: "es", blurb: "Una novela corta y escalofriante que se lee en una tarde — y no se olvida." },
+  { title: "Como agua para chocolate", author: "Laura Esquivel", pages: 246, tags: ["En español", "Romance", "For adults"], aud: "adult", lang: "es", blurb: "Amor, cocina y magia en la frontera. Cada capítulo empieza con una receta." },
+  { title: "La sombra del viento", author: "Carlos Ruiz Zafón", pages: 576, tags: ["En español", "Mystery", "For adults"], aud: "adult", lang: "es", blurb: "Un cementerio de libros olvidados en Barcelona. Largo, pero imposible de soltar." },
+  { title: "Bajo la misma estrella", author: "John Green", pages: 304, tags: ["En español", "Romance", "Heartwarming"], aud: "all", lang: "es", blurb: "El famoso 'The Fault in Our Stars' en español — amor, humor y lágrimas." },
 ];
-const ALL_TAGS = ["All", "Short reads", "Funny", "Adventure", "Heartwarming", "Fantasy", "Mystery", "Romance", "Sci-fi", "Nonfiction", "Classics", "Pictures inside", "For adults"];
+const ALL_TAGS = ["All", "En español", "Short reads", "Funny", "Adventure", "Heartwarming", "Fantasy", "Mystery", "Romance", "Sci-fi", "Nonfiction", "Classics", "Pictures inside", "For adults"];
 
 // ---------- The After Dark Shelf (adults only) ----------
 // Shown ONLY to readers who answered "grown-up" on the personality quiz.
@@ -113,6 +126,11 @@ const QUIZ = [
     { label: "A young reader (elementary/middle school)", tags: {}, audience: "kid" },
     { label: "A teen", tags: {}, audience: "teen" },
     { label: "A grown-up", tags: {}, audience: "adult" },
+  ]},
+  { q: "¿En qué idioma? — What language do you want to read in?", options: [
+    { label: "English", tags: {}, lang: "en" },
+    { label: "Español", tags: { "En español": 3 }, lang: "es" },
+    { label: "Both / Los dos", tags: { "En español": 1 }, lang: "both" },
   ]},
   { q: "Made-up stories, or real life?", options: [
     { label: "Fiction all the way — take me somewhere else", tags: {} },
@@ -188,21 +206,27 @@ function scoreQuiz(answers) {
   const tagScores = {};
   let maxPages = Infinity;
   let audience = "all";
+  let lang = "en";
   answers.forEach((ai, qi) => {
     const opt = QUIZ[qi]?.options[ai];
     if (!opt) return;
     Object.entries(opt.tags).forEach(([t, v]) => { tagScores[t] = (tagScores[t] || 0) + v; });
     if (opt.maxPages) maxPages = Math.min(maxPages, opt.maxPages);
     if (opt.audience) audience = opt.audience;
+    if (opt.lang) lang = opt.lang;
   });
-  return { tagScores, maxPages, audience };
+  return { tagScores, maxPages, audience, lang };
 }
 
 function matchBooks(answers) {
-  const { tagScores, maxPages, audience } = scoreQuiz(answers);
+  const { tagScores, maxPages, audience, lang } = scoreQuiz(answers);
   let pool = PICKS;
   // Young readers never get adult-audience books recommended
-  if (audience === "kid") pool = PICKS.filter((p) => p.aud !== "adult");
+  if (audience === "kid") pool = pool.filter((p) => p.aud !== "adult");
+  // English-only readers don't get Spanish-language picks (they can still browse the chip)
+  if (lang === "en") pool = pool.filter((p) => p.lang !== "es");
+  // Spanish readers: Spanish books rise to the top
+  const langBoost = (p) => (lang === "es" ? (p.lang === "es" ? 6 : -4) : lang === "both" ? (p.lang === "es" ? 2 : 0) : 0);
   return pool.map((p) => {
     let score = p.tags.reduce((s, t) => s + (tagScores[t] || 0), 0);
     score += p.pages <= maxPages ? 1 : -2;
@@ -210,6 +234,7 @@ function matchBooks(answers) {
     if (audience === "adult") score += aud === "adult" ? 3 : aud === "all" ? 1 : -3;
     if (audience === "teen") score += aud === "all" ? 2 : 0;
     if (audience === "kid") score += aud === "kids" ? 2 : 0;
+    score += langBoost(p);
     return { ...p, score, reasons: p.tags.filter((t) => tagScores[t]) };
   }).sort((a, b) => b.score - a.score);
 }
@@ -481,6 +506,11 @@ export default function ShelfLife() {
   const [aiPicks, setAiPicks] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [matureTab, setMatureTab] = useState("romance");
+  const [recFor, setRecFor] = useState(null); // finished book id we're recommending from
+  const [recResults, setRecResults] = useState({}); // bookId -> [books]
+  const [recLoading, setRecLoading] = useState(false);
+  const [aiNext, setAiNext] = useState({}); // bookId -> [ai picks]
+  const [aiNextLoading, setAiNextLoading] = useState(false);
   const [points, setPoints] = useState(0);
   const [quizResults, setQuizResults] = useState({}); // bookId -> {score, total, passed, at}
   const [bookQuiz, setBookQuiz] = useState(null); // {bookId, title, loading, questions, answers, submitted, score, earned}
@@ -713,7 +743,7 @@ export default function ShelfLife() {
     persist({ books: nextBooks, readDays: withToday(readDays), points: points + 25 });
     const unlocked = REWARDS.some((r) => r.type === "books" && r.need === doneBefore + 1);
     celebrate();
-    flash(unlocked ? "Finished! +25 pts & gift unlocked 🎁" : "Finished! +25 pts — take the book quiz for up to 50 more 🧠");
+    flash(unlocked ? "Finished! +25 pts & gift unlocked 🎁" : "Finished! +25 pts — check the For You tab for what's next 📖");
   };
 
   // ----- Book comprehension quizzes (AI-generated) -----
@@ -806,6 +836,79 @@ export default function ShelfLife() {
     setSearching(false);
   };
 
+  // ----- "For you": recommendations based on a finished book (Open Library, free) -----
+  const fetchRecs = async (book) => {
+    setRecFor(book.id);
+    if (recResults[book.id]) return; // cached
+    setRecLoading(true);
+    try {
+      const seen = new Set([book.title.toLowerCase(), ...onShelfTitles]);
+      const out = [];
+      const fields = "key,title,author_name,number_of_pages_median,cover_i,first_publish_year";
+      // 1) More from the same author
+      if (book.author) {
+        const r = await fetch(`https://openlibrary.org/search.json?author=${encodeURIComponent(book.author)}&limit=10&fields=${fields}`);
+        const d = await r.json();
+        for (const doc of d.docs || []) {
+          const t = (doc.title || "").toLowerCase();
+          if (t && !seen.has(t)) { seen.add(t); out.push({ ...doc, why: `More from ${book.author}` }); }
+          if (out.length >= 4) break;
+        }
+      }
+      // 2) Books about the same things
+      const r1 = await fetch(`https://openlibrary.org/search.json?title=${encodeURIComponent(book.title)}&limit=1&fields=key`);
+      const d1 = await r1.json();
+      const workKey = d1.docs?.[0]?.key;
+      if (workKey) {
+        const r2 = await fetch(`https://openlibrary.org${workKey}.json`);
+        const d2 = await r2.json();
+        const subjects = (d2.subjects || []).filter((x) => typeof x === "string" && x.length < 28 && !/fiction$|places|times|reading level|accessible/i.test(x)).slice(0, 2);
+        for (const sb of subjects) {
+          const r3 = await fetch(`https://openlibrary.org/search.json?subject=${encodeURIComponent(sb)}&limit=8&fields=${fields}`);
+          const d3 = await r3.json();
+          for (const doc of d3.docs || []) {
+            const t = (doc.title || "").toLowerCase();
+            if (t && !seen.has(t)) { seen.add(t); out.push({ ...doc, why: `Also about ${sb.toLowerCase()}` }); }
+            if (out.length >= 9) break;
+          }
+          if (out.length >= 9) break;
+        }
+      }
+      setRecResults((prev) => ({ ...prev, [book.id]: out.slice(0, 9) }));
+    } catch {
+      flash("Couldn't fetch recommendations — try again in a moment");
+    }
+    setRecLoading(false);
+  };
+
+  const askClaudeNext = async (book) => {
+    setAiNextLoading(true);
+    const { tagScores, lang } = quiz ? scoreQuiz(quiz) : { tagScores: {}, lang: "en" };
+    const likes = Object.entries(tagScores).sort((a, b) => b[1] - a[1]).map(([t]) => t).join(", ") || "unknown";
+    const langNote = lang === "es" ? " Recommend Spanish-language books and write the 'why' in Spanish." : "";
+    try {
+      const response = await fetch("/api/claude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5",
+          max_tokens: 800,
+          messages: [{
+            role: "user",
+            content: `A beginner reader just FINISHED and loved "${book.title}"${book.author ? ` by ${book.author}` : ""}. Their general taste: ${likes}.${langNote} Recommend exactly 3 real books to read next based on that book. Do not recommend the same book or books by the same title. Respond with ONLY a JSON array, no markdown: [{"title":"...","author":"...","pages":123,"why":"one sentence linking it to the book they finished"}]`,
+          }],
+        }),
+      });
+      const data = await response.json();
+      const text = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("\n");
+      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+      setAiNext((prev) => ({ ...prev, [book.id]: Array.isArray(parsed) ? parsed.slice(0, 3) : [] }));
+    } catch {
+      flash("AI picks need the API key (Monday!) — the suggestions above work now");
+    }
+    setAiNextLoading(false);
+  };
+
   // ----- Personality quiz helpers -----
   const finishQuiz = (answers) => {
     persist({ quiz: answers });
@@ -824,7 +927,9 @@ export default function ShelfLife() {
     if (!quiz) return;
     setAiLoading(true);
     const { tagScores, maxPages, audience } = scoreQuiz(quiz);
-    const audienceNote = audience === "adult" ? "The reader is an adult." : audience === "teen" ? "The reader is a teenager." : "The reader is a child — recommend only age-appropriate books.";
+    const { lang } = scoreQuiz(quiz);
+    const langNote = lang === "es" ? " Recommend books in SPANISH (books originally in or translated to Spanish), and write the 'why' in Spanish." : lang === "both" ? " Include at least one Spanish-language book." : "";
+    const audienceNote = (audience === "adult" ? "The reader is an adult." : audience === "teen" ? "The reader is a teenager." : "The reader is a child — recommend only age-appropriate books.") + langNote;
     const likes = Object.entries(tagScores).sort((a, b) => b[1] - a[1]).map(([t]) => t).join(", ");
     const avoid = [...PICKS.map((p) => p.title), ...books.map((b) => b.title)].join("; ");
     try {
@@ -919,7 +1024,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v6</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v7</span>
         </p>
       </header>
 
@@ -929,6 +1034,7 @@ export default function ShelfLife() {
           ["shelf", "My shelf"],
           ["discover", "Find a book"],
           ["personality", "Personality"],
+          ["foryou", "For you"],
           ["club", "Book club"],
           ["classroom", "Classroom"],
           ["rewards", "Rewards"],
@@ -1992,6 +2098,122 @@ export default function ShelfLife() {
                   onClick={() => persist({ classroom: null })}>
                   Leave this class
                 </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---------------- FOR YOU (recommendations) ---------------- */}
+        {tab === "foryou" && (
+          <div style={{ animation: "rise .3s ease" }}>
+            {done.length === 0 ? (
+              <Ruled>
+                <p style={{ margin: 0, lineHeight: "28px" }}>
+                  <strong>This page fills up when you finish a book.</strong> Mark any book finished
+                  on your shelf and we'll line up what to read next — same author, same vibes,
+                  same feeling you didn't want to end.
+                </p>
+              </Ruled>
+            ) : (
+              <div>
+                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 22, margin: "0 0 4px" }}>
+                  What to read next
+                </h2>
+                <p style={{ margin: "0 0 12px", fontSize: 13, color: T.inkSoft }}>
+                  Pick a book you finished — we'll find its literary cousins.
+                </p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                  {done.map((b) => (
+                    <button key={b.id}
+                      onClick={() => fetchRecs(b)}
+                      style={{
+                        padding: "7px 14px", borderRadius: 999, fontSize: 13, cursor: "pointer", fontWeight: 700,
+                        border: `1.5px solid ${recFor === b.id ? T.blue : T.rule}`,
+                        background: recFor === b.id ? T.blue : "transparent",
+                        color: recFor === b.id ? "#FFF" : T.ink,
+                        fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                      }}>
+                      {b.title}
+                    </button>
+                  ))}
+                </div>
+
+                {!recFor && <p style={{ color: T.inkSoft }}>Tap one of your finished books above ☝️</p>}
+                {recLoading && <p style={{ color: T.inkSoft }}>Hunting down the perfect next reads…</p>}
+
+                {recFor && !recLoading && (() => {
+                  const src = done.find((b) => b.id === recFor);
+                  const recs = recResults[recFor] || [];
+                  return (
+                    <div>
+                      <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 17, margin: "0 0 10px" }}>
+                        Because you finished “{src?.title}”
+                      </h3>
+                      {recs.length === 0 && (
+                        <p style={{ color: T.inkSoft }}>
+                          Hmm — couldn't find close matches for this one. Try the ✨ button below, or another finished book.
+                        </p>
+                      )}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
+                        {recs.map((r) => {
+                          const author = (r.author_name || [])[0] || "";
+                          const pages = r.number_of_pages_median || "";
+                          const owned = onShelfTitles.has((r.title || "").toLowerCase());
+                          return (
+                            <div key={r.key} style={{
+                              border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12,
+                              background: T.paper, display: "flex", gap: 10,
+                            }}>
+                              {r.cover_i ? (
+                                <img src={`https://covers.openlibrary.org/b/id/${r.cover_i}-M.jpg`} alt=""
+                                  style={{ width: 52, height: 76, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
+                              ) : (
+                                <div style={{ width: 52, height: 76, borderRadius: 4, flexShrink: 0, background: spineColor(r.title || "book"), boxShadow: "inset -4px 0 rgba(0,0,0,0.18)" }} />
+                              )}
+                              <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+                                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15, lineHeight: 1.2 }}>{r.title}</div>
+                                <div style={{ fontSize: 12, color: T.inkSoft }}>{author}{pages ? ` · ${pages} pages` : ""}</div>
+                                <div style={{ fontSize: 12, color: T.green, fontWeight: 700 }}>✓ {r.why}</div>
+                                <button
+                                  style={{ ...(owned ? ghostBtn : btn(T.green)), marginTop: "auto", padding: "6px 12px", fontSize: 12, opacity: owned ? 0.6 : 1, cursor: owned ? "default" : "pointer" }}
+                                  disabled={owned}
+                                  onClick={() => addBook({ title: r.title, author, pages: pages || 200, status: "want" })}>
+                                  {owned ? "On your shelf ✓" : "Add to shelf"}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* AI layer */}
+                      <div style={{ marginTop: 18 }}>
+                        <button style={{ ...btn(), opacity: aiNextLoading ? 0.6 : 1 }} disabled={aiNextLoading}
+                          onClick={() => askClaudeNext(src)}>
+                          {aiNextLoading ? "Thinking…" : "✨ 3 handpicked follow-ups"}
+                        </button>
+                        {(aiNext[recFor] || []).length > 0 && (
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginTop: 12 }}>
+                            {aiNext[recFor].map((p) => (
+                              <div key={p.title} style={{
+                                border: `1.5px dashed ${T.blue}`, borderRadius: 10, padding: 14,
+                                background: "#F5F8FC", display: "flex", flexDirection: "column", gap: 6,
+                              }}>
+                                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 17, lineHeight: 1.2 }}>{p.title}</div>
+                                <div style={{ fontSize: 13, color: T.inkSoft }}>{p.author}{p.pages ? ` · ~${p.pages} pages` : ""}</div>
+                                <div style={{ fontSize: 14, flex: 1 }}>{p.why}</div>
+                                <button style={{ ...btn(T.green), marginTop: 4 }}
+                                  onClick={() => addBook({ title: p.title, author: p.author, pages: p.pages, status: "want" })}>
+                                  Add to shelf
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
