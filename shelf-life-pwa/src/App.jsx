@@ -241,6 +241,22 @@ function matchBooks(answers) {
 
 const topTag = (tagScores) => Object.entries(tagScores).sort((a, b) => b[1] - a[1])[0]?.[0] || "Heartwarming";
 
+// ---------- Digital shelf: free public-domain classics (Project Gutenberg) ----------
+const FEATURED_CLASSICS = [
+  { gid: 46, title: "A Christmas Carol", author: "Charles Dickens", note: "Short & beloved — a perfect first classic." },
+  { gid: 5200, title: "Metamorphosis", author: "Franz Kafka", note: "Wakes up as a giant insect. Very short, very famous." },
+  { gid: 11, title: "Alice's Adventures in Wonderland", author: "Lewis Carroll", note: "Down the rabbit hole — playful and quick." },
+  { gid: 1661, title: "The Adventures of Sherlock Holmes", author: "Arthur Conan Doyle", note: "12 mysteries — read one case at a time." },
+  { gid: 1342, title: "Pride and Prejudice", author: "Jane Austen", note: "The original enemies-to-lovers." },
+  { gid: 84, title: "Frankenstein", author: "Mary Shelley", note: "The monster story that started sci-fi." },
+  { gid: 345, title: "Dracula", author: "Bram Stoker", note: "The vampire classic, told in letters and diaries." },
+  { gid: 64317, title: "The Great Gatsby", author: "F. Scott Fitzgerald", note: "Short, dazzling, and finally free to read." },
+  { gid: 74, title: "The Adventures of Tom Sawyer", author: "Mark Twain", note: "Fence-painting, cave adventures, pure fun." },
+  { gid: 16, title: "Peter Pan", author: "J. M. Barrie", note: "Second star to the right — for every age." },
+  { gid: 55, title: "The Wonderful Wizard of Oz", author: "L. Frank Baum", note: "Follow the yellow brick road, chapter by chapter." },
+  { gid: 2000, title: "Don Quijote", author: "Miguel de Cervantes", note: "La obra maestra del español — léela poco a poco." },
+];
+
 // ---------- Streaks, goals & gifts ----------
 const dkey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const todayKey = () => dkey(new Date());
@@ -340,9 +356,9 @@ async function loadShelf() {
   try {
     const r = await storage.get("shelf-data-v1");
     const d = r ? JSON.parse(r.value) : {};
-    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null };
+    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [] };
   } catch {
-    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null };
+    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [] };
   }
 }
 async function saveShelf(data) {
@@ -523,6 +539,12 @@ export default function ShelfLife() {
   const [meetupForm, setMeetupForm] = useState({ host: "", place: "", when: "", book: "", note: "" });
   const [rsvpDrafts, setRsvpDrafts] = useState({});
   const [savingMeetup, setSavingMeetup] = useState(false);
+  const [digitalShelf, setDigitalShelf] = useState([]); // [{gid, title, author, pos}]
+  const [reader, setReader] = useState(null); // {gid, title, author, pages, page, loading}
+  const [readerFont, setReaderFont] = useState(17);
+  const [gutenQuery, setGutenQuery] = useState("");
+  const [gutenResults, setGutenResults] = useState(null);
+  const [gutenLoading, setGutenLoading] = useState(false);
   const [classroom, setClassroom] = useState(null); // student: {code, name, className, teacher, book, chapters, chapter}
   const [teaching, setTeaching] = useState(null); // teacher: {code, className, teacher, book, chapters}
   const [classMode, setClassMode] = useState(null); // null | "teacher-setup" | "student-join"
@@ -542,6 +564,7 @@ export default function ShelfLife() {
       setQuizResults(d.quizResults || {});
       setClassroom(d.classroom || null);
       setTeaching(d.teaching || null);
+      setDigitalShelf(d.digitalShelf || []);
       if (d.quiz) setPickTag(topTag(scoreQuiz(d.quiz).tagScores));
       setLoaded(true);
     });
@@ -674,7 +697,7 @@ export default function ShelfLife() {
   };
 
   const persist = (patch) => {
-    const next = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, ...patch };
+    const next = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, ...patch };
     setBooks(next.books);
     setReadDays(next.readDays);
     setGoalDays(next.goalDays);
@@ -683,6 +706,7 @@ export default function ShelfLife() {
     setQuizResults(next.quizResults);
     setClassroom(next.classroom);
     setTeaching(next.teaching);
+    setDigitalShelf(next.digitalShelf);
     saveShelf(next);
   };
   const withToday = (days) => (days.includes(todayKey()) ? days : [...days, todayKey()]);
@@ -911,6 +935,70 @@ export default function ShelfLife() {
     setAiNextLoading(false);
   };
 
+  // ----- Digital shelf: search, add, and read public-domain books -----
+  const searchGutenberg = async () => {
+    const q = gutenQuery.trim();
+    if (!q) return;
+    setGutenLoading(true);
+    try {
+      const r = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(q)}`);
+      const d = await r.json();
+      setGutenResults((d.results || []).slice(0, 12).map((b) => ({
+        gid: b.id, title: b.title, author: (b.authors || [])[0]?.name || "",
+        cover: b.formats?.["image/jpeg"] || null, downloads: b.download_count,
+      })));
+    } catch {
+      flash("Search hiccup — try again");
+    }
+    setGutenLoading(false);
+  };
+
+  const addDigital = (b) => {
+    if (digitalShelf.some((x) => x.gid === b.gid)) { flash("Already on your digital shelf ✓"); return; }
+    persist({ digitalShelf: [{ gid: b.gid, title: b.title, author: b.author, cover: b.cover || null, pos: 0 }, ...digitalShelf] });
+    flash(`"${b.title}" added — tap Read anytime 📱`);
+  };
+
+  const removeDigital = (gid) => persist({ digitalShelf: digitalShelf.filter((x) => x.gid !== gid) });
+
+  const openReader = async (item) => {
+    setReader({ gid: item.gid, title: item.title, author: item.author, loading: true, pages: [], page: item.pos || 0 });
+    try {
+      const r = await fetch(`/api/book?id=${item.gid}`);
+      const d = await r.json();
+      if (!d.text) throw new Error(d.error || "no text");
+      // Split into gentle pages (~1600 chars, breaking at whitespace)
+      const pages = [];
+      let i = 0;
+      const text = d.text;
+      while (i < text.length) {
+        let end = Math.min(i + 1600, text.length);
+        if (end < text.length) {
+          const brk = text.lastIndexOf("\n", end);
+          const sp = text.lastIndexOf(" ", end);
+          end = Math.max(brk, sp) > i + 800 ? Math.max(brk, sp) : end;
+        }
+        pages.push(text.slice(i, end));
+        i = end;
+      }
+      setReader((prev) => prev && { ...prev, loading: false, pages, page: Math.min(prev.page, pages.length - 1) });
+    } catch {
+      flash("Couldn't open that book — try another");
+      setReader(null);
+    }
+  };
+
+  const turnPage = (delta) => {
+    if (!reader?.pages?.length) return;
+    const page = Math.max(0, Math.min(reader.pages.length - 1, reader.page + delta));
+    setReader({ ...reader, page });
+    // Save position + count today as a reading day
+    persist({
+      digitalShelf: digitalShelf.map((x) => (x.gid === reader.gid ? { ...x, pos: page } : x)),
+      readDays: delta > 0 ? withToday(readDays) : readDays,
+    });
+  };
+
   // ----- "More like this": live wider-library picks matched to quiz taste -----
   const TAG_SUBJECTS = {
     Funny: "humorous fiction", Adventure: "adventure stories", Heartwarming: "friendship fiction",
@@ -1070,7 +1158,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v9</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v10</span>
         </p>
       </header>
 
@@ -1081,6 +1169,7 @@ export default function ShelfLife() {
           ["discover", "Find a book"],
           ["personality", "Personality"],
           ["foryou", "For you"],
+          ["read", "Read 📱"],
           ["club", "Book club"],
           ["classroom", "Classroom"],
           ["rewards", "Rewards"],
@@ -2302,6 +2391,106 @@ export default function ShelfLife() {
           </div>
         )}
 
+        {/* ---------------- READ (digital shelf) ---------------- */}
+        {tab === "read" && (
+          <div style={{ animation: "rise .3s ease" }}>
+            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 22, margin: "0 0 4px" }}>
+              My digital shelf
+            </h2>
+            <p style={{ margin: "0 0 14px", fontSize: 13, color: T.inkSoft }}>
+              70,000+ classic books, free and legal to read right here — Sherlock, Austen, Dracula, Don Quijote y más.
+              Reading in here counts toward your streak. 🔥
+            </p>
+
+            {/* My saved digital books */}
+            {digitalShelf.length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                {digitalShelf.map((b) => (
+                  <div key={b.gid} style={{
+                    border: `1px solid ${T.rule}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8,
+                    background: T.paper, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap",
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 16 }}>{b.title}</div>
+                      <div style={{ fontSize: 12, color: T.inkSoft }}>{b.author}{b.pos > 0 ? ` · you're on page ${b.pos + 1}` : ""}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button style={btn()} onClick={() => openReader(b)}>{b.pos > 0 ? "Keep reading" : "Start reading"}</button>
+                      <button aria-label="Remove" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 16 }}
+                        onClick={() => removeDigital(b.gid)}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Search the free library */}
+            <Ruled style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, lineHeight: "28px" }}>Search the free library</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: 4 }}>
+                <input
+                  style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: `1.5px solid ${T.rule}`, borderRadius: 8, background: T.card, color: T.ink, fontSize: 15, fontFamily: "'Atkinson Hyperlegible', sans-serif", outline: "none", flex: "1 1 220px" }}
+                  placeholder="Try 'Sherlock', 'Austen', 'Quijote'…"
+                  value={gutenQuery}
+                  onChange={(e) => setGutenQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && searchGutenberg()}
+                />
+                <button style={{ ...btn(), opacity: gutenQuery.trim() && !gutenLoading ? 1 : 0.5 }} disabled={!gutenQuery.trim() || gutenLoading} onClick={searchGutenberg}>
+                  {gutenLoading ? "Searching…" : "Search"}
+                </button>
+              </div>
+            </Ruled>
+
+            {gutenResults && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginBottom: 20 }}>
+                {gutenResults.length === 0 && <p style={{ color: T.inkSoft }}>Nothing found — try an author's last name.</p>}
+                {gutenResults.map((b) => (
+                  <div key={b.gid} style={{ border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12, background: T.paper, display: "flex", gap: 10 }}>
+                    {b.cover ? (
+                      <img src={b.cover} alt="" style={{ width: 52, height: 76, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
+                    ) : (
+                      <div style={{ width: 52, height: 76, borderRadius: 4, flexShrink: 0, background: spineColor(b.title), boxShadow: "inset -4px 0 rgba(0,0,0,0.18)" }} />
+                    )}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+                      <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15, lineHeight: 1.2 }}>{b.title}</div>
+                      <div style={{ fontSize: 12, color: T.inkSoft }}>{b.author}</div>
+                      <button style={{ ...btn(T.green), marginTop: "auto", padding: "6px 12px", fontSize: 12 }}
+                        onClick={() => addDigital(b)}>
+                        Add to digital shelf
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Featured classics */}
+            <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 17, margin: "0 0 10px" }}>
+              Great first classics
+            </h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
+              {FEATURED_CLASSICS.map((b) => {
+                const owned = digitalShelf.some((x) => x.gid === b.gid);
+                return (
+                  <div key={b.gid} style={{
+                    border: `1px solid ${T.rule}`, borderRadius: 10, padding: 14, background: T.paper,
+                    display: "flex", flexDirection: "column", gap: 5, borderTop: `6px solid ${spineColor(b.title)}`,
+                  }}>
+                    <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 16, lineHeight: 1.2 }}>{b.title}</div>
+                    <div style={{ fontSize: 12, color: T.inkSoft }}>{b.author}</div>
+                    <div style={{ fontSize: 13.5, flex: 1 }}>{b.note}</div>
+                    <button style={{ ...(owned ? ghostBtn : btn(T.green)), marginTop: 4, opacity: owned ? 0.6 : 1 }}
+                      disabled={owned}
+                      onClick={() => addDigital(b)}>
+                      {owned ? "On your digital shelf ✓" : "Add & read free"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* ---------------- REWARDS ---------------- */}
         {tab === "rewards" && (
           <div style={{ animation: "rise .3s ease" }}>
@@ -2480,6 +2669,54 @@ export default function ShelfLife() {
           </div>
         )}
       </main>
+
+      {/* ---------------- READER OVERLAY ---------------- */}
+      {reader && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 80, background: T.paper,
+          display: "flex", flexDirection: "column",
+        }}>
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+            padding: "12px 16px", borderBottom: `1.5px solid ${T.rule}`, background: T.card,
+          }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {reader.title}
+              </div>
+              <div style={{ fontSize: 12, color: T.inkSoft }}>{reader.author}</div>
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+              <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 10px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
+              <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 10px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
+              <button style={{ ...btn(T.stamp), padding: "6px 14px" }} onClick={() => setReader(null)}>Close</button>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "22px 18px", maxWidth: 640, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+            {reader.loading ? (
+              <p style={{ color: T.inkSoft, textAlign: "center", marginTop: 60 }}>Opening your book… 📖</p>
+            ) : (
+              <div style={{ fontSize: readerFont, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
+                {reader.pages[reader.page]}
+              </div>
+            )}
+          </div>
+
+          {!reader.loading && (
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+              padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", borderTop: `1.5px solid ${T.rule}`, background: T.card,
+            }}>
+              <button style={{ ...ghostBtn, opacity: reader.page === 0 ? 0.4 : 1 }} disabled={reader.page === 0} onClick={() => turnPage(-1)}>← Back</button>
+              <span style={{ fontSize: 12, color: T.inkSoft }}>
+                Page {reader.page + 1} of {reader.pages.length} · {Math.round(((reader.page + 1) / reader.pages.length) * 100)}%
+              </span>
+              <button style={{ ...btn(T.green), opacity: reader.page >= reader.pages.length - 1 ? 0.4 : 1 }} disabled={reader.page >= reader.pages.length - 1} onClick={() => turnPage(1)}>Next →</button>
+            </div>
+          )}
+        </div>
+      )}
 
       <InstallPrompt />
 
