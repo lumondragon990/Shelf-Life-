@@ -244,20 +244,34 @@ const topTag = (tagScores) => Object.entries(tagScores).sort((a, b) => b[1] - a[
 // Normalize titles for matching search results against Gutenberg's catalog
 const normTitle = (t) => (t || "").toLowerCase().replace(/[^a-z0-9áéíóúñü ]/g, "").replace(/\s+/g, " ").trim();
 
-// Search Gutenberg's catalog and return a lookup of normalized title -> book id
+// Search Gutenberg's catalog (with a hard 5s timeout so it never slows the UI)
 async function gutenbergLookup(query) {
   try {
-    const r = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(query)}`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const r = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(query)}`, { signal: ctrl.signal });
+    clearTimeout(timer);
     const d = await r.json();
-    const map = {};
-    for (const b of (d.results || []).slice(0, 20)) {
-      const key = normTitle(b.title);
-      if (key && !map[key]) map[key] = { gid: b.id, title: b.title, author: (b.authors || [])[0]?.name || "" };
+    const list = [];
+    for (const b of (d.results || []).slice(0, 24)) {
+      list.push({ gid: b.id, key: normTitle(b.title), title: b.title, author: (b.authors || [])[0]?.name || "" });
     }
-    return map;
+    return list;
   } catch {
-    return {};
+    return [];
   }
+}
+
+// Fuzzy-match a search-result title against Gutenberg entries
+const stripArticles = (t) => t.replace(/^(the|a|an|el|la|los|las|un|una)\s+/, "");
+function matchGuten(list, title) {
+  const key = stripArticles(normTitle(title));
+  if (!key || key.length < 4) return null;
+  for (const g of list) {
+    const gk = stripArticles(g.key);
+    if (gk === key || (gk.length >= 5 && key.length >= 5 && (gk.startsWith(key) || key.startsWith(gk)))) return g;
+  }
+  return null;
 }
 
 // ---------- Digital shelf: free public-domain classics (Project Gutenberg) ----------
@@ -870,15 +884,17 @@ export default function ShelfLife() {
     if (!q) return;
     setSearching(true);
     try {
-      const [ol, guten] = await Promise.all([
-        fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=20&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`).then((r) => r.json()),
-        gutenbergLookup(q),
-      ]);
-      const docs = (ol.docs || []).map((doc) => {
-        const g = guten[normTitle(doc.title)];
-        return g ? { ...doc, gutenId: g.gid, gutenAuthor: g.author } : doc;
+      // Show main results immediately…
+      const ol = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=20&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`).then((r) => r.json());
+      setSearchResults(ol.docs || []);
+      // …then let the free-digital badges pop in when Gutenberg answers
+      gutenbergLookup(q).then((glist) => {
+        if (!glist.length) return;
+        setSearchResults((prev) => (prev || []).map((doc) => {
+          const g = matchGuten(glist, doc.title);
+          return g ? { ...doc, gutenId: g.gid, gutenAuthor: g.author } : doc;
+        }));
       });
-      setSearchResults(docs);
     } catch {
       flash("Search hiccup — check your connection and try again");
     }
@@ -978,8 +994,16 @@ export default function ShelfLife() {
 
   const addDigital = (b) => {
     if (digitalShelf.some((x) => x.gid === b.gid)) { flash("Already on your digital shelf ✓"); return; }
-    persist({ digitalShelf: [{ gid: b.gid, title: b.title, author: b.author, cover: b.cover || null, pos: 0 }, ...digitalShelf] });
-    flash(`"${b.title}" added — tap Read anytime 📱`);
+    const patch = { digitalShelf: [{ gid: b.gid, title: b.title, author: b.author, cover: b.cover || null, pos: 0 }, ...digitalShelf] };
+    // Also add a linked book to My Shelf — reading progress syncs automatically
+    if (!books.some((x) => x.gid === b.gid)) {
+      patch.books = [{
+        id: uid(), gid: b.gid, title: b.title, author: b.author || "",
+        pages: 100, status: "reading", currentPage: 0, rating: 0, addedAt: Date.now(), finishedAt: null,
+      }, ...books];
+    }
+    persist(patch);
+    flash(`"${b.title}" added to both shelves — progress syncs as you read 📱`);
   };
 
   const removeDigital = (gid) => persist({ digitalShelf: digitalShelf.filter((x) => x.gid !== gid) });
@@ -1013,13 +1037,27 @@ export default function ShelfLife() {
 
   const turnPage = (delta) => {
     if (!reader?.pages?.length) return;
-    const page = Math.max(0, Math.min(reader.pages.length - 1, reader.page + delta));
+    const total = reader.pages.length;
+    const page = Math.max(0, Math.min(total - 1, reader.page + delta));
     setReader({ ...reader, page });
-    // Save position + count today as a reading day
+    const atEnd = page >= total - 1;
+    // Sync progress to the linked book on My Shelf; last page = a real finish
+    let earned = 0;
+    const nextBooks = books.map((x) => {
+      if (x.gid !== reader.gid) return x;
+      if (atEnd && x.status !== "done") {
+        earned = 25;
+        return { ...x, pages: total, currentPage: total, status: "done", finishedAt: Date.now() };
+      }
+      return { ...x, pages: total, currentPage: atEnd ? total : page, status: x.status === "done" ? "done" : "reading" };
+    });
     persist({
       digitalShelf: digitalShelf.map((x) => (x.gid === reader.gid ? { ...x, pos: page } : x)),
       readDays: delta > 0 ? withToday(readDays) : readDays,
+      books: nextBooks,
+      points: points + earned,
     });
+    if (earned) { celebrate(); flash("You finished the whole book! +25 pts 🎉"); }
   };
 
   // ----- "More like this": live wider-library picks matched to quiz taste -----
@@ -1181,7 +1219,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v11</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v12</span>
         </p>
       </header>
 
@@ -2827,12 +2865,11 @@ function BookTitleInput({ value, onChange, onPick, placeholder }) {
       setLoading(true);
       try {
         // Search BOTH catalogs at once and merge — far wider coverage
-        const [ol, gb, guten] = await Promise.allSettled([
+        const gutenPromise = gutenbergLookup(q); // runs in background, never blocks
+        const [ol, gb] = await Promise.allSettled([
           fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=15&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`).then((r) => r.json()),
           fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=12`).then((r) => r.json()),
-          gutenbergLookup(q),
         ]);
-        const gutenMap = guten.status === "fulfilled" ? guten.value : {};
         const merged = [];
         const seen = new Set();
         const push = (item) => {
@@ -2862,11 +2899,23 @@ function BookTitleInput({ value, onChange, onPick, placeholder }) {
             });
           });
         }
-        setResults(merged.slice(0, 20).map((m) => {
-          const g = gutenMap[normTitle(m.title)];
-          return g ? { ...m, gutenId: g.gid } : m;
-        }));
+        setResults(merged.slice(0, 20));
+        // Free-library check in the background — never slows the dropdown
+        gutenbergLookup(q).then((glist) => {
+          if (!glist || !glist.length) return;
+          setResults((prev) => prev.map((m) => {
+            const g = matchGuten(glist, m.title);
+            return g ? { ...m, gutenId: g.gid } : m;
+          }));
+        });
         setOpen(true);
+        gutenPromise.then((glist) => {
+          if (!glist.length) return;
+          setResults((prev) => prev.map((m) => {
+            const g = matchGuten(glist, m.title);
+            return g ? { ...m, gutenId: g.gid } : m;
+          }));
+        });
       } catch { /* quiet fail — manual typing still works */ }
       setLoading(false);
     }, 450);
