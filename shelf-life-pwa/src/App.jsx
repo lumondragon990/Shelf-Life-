@@ -575,6 +575,7 @@ export default function ShelfLife() {
   const [digitalShelf, setDigitalShelf] = useState([]); // [{gid, title, author, pos}]
   const [reader, setReader] = useState(null); // {gid, title, author, pages, page, loading}
   const [readerFont, setReaderFont] = useState(17);
+  const [wordCard, setWordCard] = useState(null); // {word, loading, phonetic, pos, definition, notFound}
   const [gutenQuery, setGutenQuery] = useState("");
   const [gutenResults, setGutenResults] = useState(null);
   const [gutenLoading, setGutenLoading] = useState(false);
@@ -587,6 +588,8 @@ export default function ShelfLife() {
   const [rosterLoading, setRosterLoading] = useState(false);
   const [classBusy, setClassBusy] = useState(false);
   const [chapQuiz, setChapQuiz] = useState(null); // {chapter, loading, questions, answers, submitted, score, earned}
+  const [rewardForm, setRewardForm] = useState({ prize: "", metric: "chapters", need: "", code: "" });
+  const [showRewardForm, setShowRewardForm] = useState(false);
 
   useEffect(() => {
     loadShelf().then((d) => {
@@ -671,7 +674,9 @@ export default function ShelfLife() {
       teacher: classForm.teacher.trim().slice(0, 40),
       className: classForm.className.trim().slice(0, 50),
       book: classForm.book.trim().slice(0, 80),
+      bookAuthor: (classForm.bookAuthor || "").trim().slice(0, 40),
       chapters: Math.max(1, Math.min(99, parseInt(classForm.chapters) || 10)),
+      rewards: [],
       createdAt: Date.now(),
     };
     try {
@@ -703,9 +708,9 @@ export default function ShelfLife() {
       const patch = { classroom: { ...cls, code, name, chapter: 0, quizzes: {} } };
       // Link the class book onto My Shelf so progress lives in both places
       if (!books.some((x) => x.classCode === code)) {
-        const pages = (await lookupPages(cls.book, "")) || cls.chapters * 12;
+        const pages = (await lookupPages(cls.book, cls.bookAuthor || "")) || cls.chapters * 12;
         patch.books = [{
-          id: uid(), classCode: code, title: cls.book, author: "",
+          id: uid(), classCode: code, title: cls.book, author: cls.bookAuthor || "",
           pages, status: "reading", currentPage: 0, rating: 0, addedAt: Date.now(), finishedAt: null,
         }, ...books];
       }
@@ -743,6 +748,49 @@ export default function ShelfLife() {
       flash(`Chapter ${chapter} done — take its quiz below! 🧠`);
     }
   };
+
+  // ----- Custom class rewards (set by the teacher — or a partner bookstore via the teacher) -----
+  const saveClassReward = async () => {
+    if (!teaching || !rewardForm.prize.trim() || !parseInt(rewardForm.need)) return;
+    const reward = {
+      id: uid(),
+      prize: rewardForm.prize.trim().slice(0, 80),
+      metric: rewardForm.metric, // "chapters" | "quizzes"
+      need: Math.max(1, Math.min(99, parseInt(rewardForm.need))),
+      code: rewardForm.code.trim().slice(0, 30),
+    };
+    const updated = { ...teaching, rewards: [...(teaching.rewards || []), reward] };
+    try {
+      await createClassRecord(updated);
+      persist({ teaching: updated });
+      setRewardForm({ prize: "", metric: "chapters", need: "", code: "" });
+      setShowRewardForm(false);
+      flash("Class reward added — students see it right away 🎁");
+    } catch {
+      flash("Couldn't save the reward — try again");
+    }
+  };
+
+  const deleteClassReward = async (id) => {
+    if (!teaching) return;
+    const updated = { ...teaching, rewards: (teaching.rewards || []).filter((r) => r.id !== id) };
+    try {
+      await createClassRecord(updated);
+      persist({ teaching: updated });
+    } catch {
+      flash("Couldn't remove it — try again");
+    }
+  };
+
+  // Students: refresh class info (book, chapters, rewards) whenever they open the Classroom tab
+  useEffect(() => {
+    if (tab !== "classroom" || !classroom?.code) return;
+    fetchClassRecord(classroom.code).then((cls) => {
+      if (!cls) return;
+      setClassroom((prev) => (prev ? { ...prev, book: cls.book, bookAuthor: cls.bookAuthor, chapters: cls.chapters, rewards: cls.rewards || [], teacher: cls.teacher, className: cls.className } : prev));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   // ----- Chapter quizzes (AI-generated per chapter; teacher sees the scores) -----
   const startChapterQuiz = async (n) => {
@@ -1074,6 +1122,47 @@ export default function ShelfLife() {
 
   const removeDigital = (gid) => persist({ digitalShelf: digitalShelf.filter((x) => x.gid !== gid) });
 
+  // ----- Word helper: tap a word to hear it and see its meaning -----
+  const speakWord = (word) => {
+    try {
+      const u = new SpeechSynthesisUtterance(word);
+      u.lang = /[áéíóúñü]/i.test(word) ? "es-ES" : "en-US";
+      u.rate = 0.85;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+    } catch { /* some browsers block speech; the card still shows meaning */ }
+  };
+
+  const lookupWord = async (raw) => {
+    const word = (raw || "").toLowerCase().replace(/[^a-záéíóúñü''-]/gi, "");
+    if (!word || word.length < 2) return;
+    setWordCard({ word, loading: true });
+    speakWord(word);
+    const isSpanish = /[áéíóúñü]/i.test(word);
+    const langs = isSpanish ? ["es", "en"] : ["en", "es"];
+    for (const lang of langs) {
+      try {
+        const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/${lang}/${encodeURIComponent(word)}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const entry = Array.isArray(d) ? d[0] : null;
+        const meaning = entry?.meanings?.[0];
+        const def = meaning?.definitions?.[0]?.definition;
+        if (def) {
+          setWordCard({
+            word: entry.word || word,
+            phonetic: entry.phonetic || (entry.phonetics || []).find((x) => x.text)?.text || "",
+            pos: meaning.partOfSpeech || "",
+            definition: def,
+            loading: false,
+          });
+          return;
+        }
+      } catch { /* try next language */ }
+    }
+    setWordCard({ word, notFound: true, loading: false });
+  };
+
   const openReader = async (item) => {
     setReader({ gid: item.gid, title: item.title, author: item.author, loading: true, pages: [], page: item.pos || 0 });
     try {
@@ -1285,7 +1374,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v13</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v14</span>
         </p>
       </header>
 
@@ -2239,8 +2328,12 @@ export default function ShelfLife() {
                     onChange={(e) => setClassForm({ ...classForm, teacher: e.target.value })} />
                   <input style={input} placeholder="Class name * (e.g. Period 3 ELA)" maxLength={50} value={classForm.className}
                     onChange={(e) => setClassForm({ ...classForm, className: e.target.value })} />
-                  <input style={input} placeholder="Book you're reading *" maxLength={80} value={classForm.book}
-                    onChange={(e) => setClassForm({ ...classForm, book: e.target.value })} />
+                  <BookTitleInput
+                    placeholder="Book you're reading * (type to search)"
+                    value={classForm.book}
+                    onChange={(v) => setClassForm({ ...classForm, book: v })}
+                    onPick={(b) => setClassForm({ ...classForm, book: b.title, bookAuthor: b.author || "" })}
+                  />
                   <input style={input} placeholder="Number of chapters" inputMode="numeric" value={classForm.chapters}
                     onChange={(e) => setClassForm({ ...classForm, chapters: e.target.value.replace(/\D/g, "") })} />
                 </div>
@@ -2369,6 +2462,58 @@ export default function ShelfLife() {
                   );
                 })}
 
+                {/* Class rewards manager */}
+                <div style={{ marginTop: 22 }}>
+                  <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: "0 0 4px" }}>
+                    Class rewards 🎁
+                  </h2>
+                  <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "0 0 10px" }}>
+                    Set your own prizes — pizza party, free-book coupon from a local bookstore, extra recess.
+                    Students see them instantly with a progress bar toward each one.
+                  </p>
+                  {(teaching.rewards || []).map((r) => (
+                    <div key={r.id} style={{
+                      border: `1px solid ${T.rule}`, borderRadius: 10, padding: "9px 14px", marginBottom: 8,
+                      background: T.paper, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap",
+                    }}>
+                      <div>
+                        <strong>{r.prize}</strong>
+                        <div style={{ fontSize: 12, color: T.inkSoft }}>
+                          Unlocks at {r.need} {r.metric === "chapters" ? "chapters read" : "chapter quizzes passed"}{r.code ? ` · code: ${r.code}` : ""}
+                        </div>
+                      </div>
+                      <button aria-label="Remove reward" style={{ background: "none", border: "none", color: T.stamp, cursor: "pointer", fontSize: 15 }}
+                        onClick={() => deleteClassReward(r.id)}>✕</button>
+                    </div>
+                  ))}
+                  {!showRewardForm ? (
+                    <button style={btn(T.green)} onClick={() => setShowRewardForm(true)}>+ Add a class reward</button>
+                  ) : (
+                    <Ruled>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 10 }}>
+                        <input style={input} placeholder="Prize * (e.g. Pizza party, $5 bookstore coupon)" maxLength={80} value={rewardForm.prize}
+                          onChange={(e) => setRewardForm({ ...rewardForm, prize: e.target.value })} />
+                        <select style={input} value={rewardForm.metric} onChange={(e) => setRewardForm({ ...rewardForm, metric: e.target.value })}>
+                          <option value="chapters">Chapters read</option>
+                          <option value="quizzes">Chapter quizzes passed</option>
+                        </select>
+                        <input style={input} placeholder="How many? *" inputMode="numeric" value={rewardForm.need}
+                          onChange={(e) => setRewardForm({ ...rewardForm, need: e.target.value.replace(/\D/g, "") })} />
+                        <input style={input} placeholder="Coupon code (optional)" maxLength={30} value={rewardForm.code}
+                          onChange={(e) => setRewardForm({ ...rewardForm, code: e.target.value })} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button style={{ ...btn(T.green), opacity: rewardForm.prize.trim() && parseInt(rewardForm.need) ? 1 : 0.5 }}
+                          disabled={!rewardForm.prize.trim() || !parseInt(rewardForm.need)}
+                          onClick={saveClassReward}>
+                          Add reward
+                        </button>
+                        <button style={ghostBtn} onClick={() => setShowRewardForm(false)}>Cancel</button>
+                      </div>
+                    </Ruled>
+                  )}
+                </div>
+
                 <button style={{ ...ghostBtn, marginTop: 12, borderColor: T.stamp, color: T.stamp }}
                   onClick={() => { persist({ teaching: null }); setRoster(null); }}>
                   Close this class on my device
@@ -2493,6 +2638,47 @@ export default function ShelfLife() {
                     </div>
                   )}
                 </Ruled>
+
+                {/* Class rewards from the teacher */}
+                {(classroom.rewards || []).length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 17, margin: "0 0 8px" }}>
+                      Class rewards from {classroom.teacher} 🎁
+                    </h3>
+                    {classroom.rewards.map((r) => {
+                      const passedCount = Object.values(classroom.quizzes || {}).filter((q) => q.passed).length;
+                      const progress = r.metric === "chapters" ? Math.min(classroom.chapter || 0, r.need) : Math.min(passedCount, r.need);
+                      const unlocked = progress >= r.need;
+                      return (
+                        <div key={r.id} style={{
+                          border: `1.5px solid ${unlocked ? T.green : T.rule}`, borderRadius: 10,
+                          padding: "10px 14px", marginBottom: 8, background: unlocked ? "#F0F5F0" : T.paper,
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                            <strong>{unlocked ? "🎉 " : "🎁 "}{r.prize}</strong>
+                            <span style={{ fontSize: 12.5, color: unlocked ? T.green : T.inkSoft, fontWeight: unlocked ? 700 : 400 }}>
+                              {progress} / {r.need} {r.metric === "chapters" ? "chapters" : "quizzes passed"}
+                            </span>
+                          </div>
+                          <div style={{ height: 7, background: "#E4DECB", borderRadius: 99, marginTop: 6 }}>
+                            <div style={{ height: 7, borderRadius: 99, width: `${Math.round((progress / r.need) * 100)}%`, background: unlocked ? T.green : T.blue, transition: "width .3s" }} />
+                          </div>
+                          {unlocked && r.code && (
+                            <div style={{ marginTop: 6, fontSize: 13 }}>
+                              Show your teacher — code: <strong style={{ color: T.green }}>{r.code}</strong>
+                              <button style={{ ...ghostBtn, marginLeft: 8, padding: "2px 10px", fontSize: 11 }} onClick={() => copyCode(r.code)}>
+                                {copied === r.code ? "Copied ✓" : "Copy"}
+                              </button>
+                            </div>
+                          )}
+                          {unlocked && !r.code && (
+                            <div style={{ marginTop: 4, fontSize: 12.5, color: T.green }}>Unlocked — tell your teacher! 🎉</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 <button style={{ ...ghostBtn, marginTop: 12, borderColor: T.stamp, color: T.stamp }}
                   onClick={() => persist({ classroom: null })}>
@@ -2925,11 +3111,46 @@ export default function ShelfLife() {
             {reader.loading ? (
               <p style={{ color: T.inkSoft, textAlign: "center", marginTop: 60 }}>Opening your book… 📖</p>
             ) : (
-              <div style={{ fontSize: readerFont, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
-                {reader.pages[reader.page]}
+              <div>
+                <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", marginBottom: 14 }}>
+                  💡 Tap any word to hear it and see what it means
+                </div>
+                <div style={{ fontSize: readerFont, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
+                  {reader.pages[reader.page].split(/(\s+)/).map((seg, i) =>
+                    /\S/.test(seg) ? (
+                      <span key={i} onClick={() => lookupWord(seg)}
+                        style={{ cursor: "pointer", borderRadius: 3 }}>
+                        {seg}
+                      </span>
+                    ) : (
+                      seg
+                    )
+                  )}
+                </div>
               </div>
             )}
           </div>
+
+          {wordCard && (
+            <div style={{ borderTop: `1.5px solid ${T.blue}`, background: "#F5F8FC", padding: "10px 16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0 }}>
+                  <strong style={{ fontSize: 17 }}>{wordCard.word}</strong>
+                  {wordCard.phonetic && <span style={{ marginLeft: 8, color: T.inkSoft, fontSize: 13 }}>{wordCard.phonetic}</span>}
+                  {wordCard.pos && <em style={{ marginLeft: 8, color: T.blue, fontSize: 13 }}>{wordCard.pos}</em>}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ ...ghostBtn, padding: "5px 12px", fontSize: 13 }} onClick={() => speakWord(wordCard.word)}>🔊 Hear it</button>
+                  <button aria-label="Close" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 16 }} onClick={() => setWordCard(null)}>✕</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 14, marginTop: 4 }}>
+                {wordCard.loading ? "Looking it up…" : wordCard.notFound
+                  ? "Couldn't find a definition for that one — but you can still hear it out loud."
+                  : wordCard.definition}
+              </div>
+            </div>
+          )}
 
           {!reader.loading && (
             <div style={{
