@@ -417,9 +417,9 @@ async function loadShelf() {
   try {
     const r = await storage.get("shelf-data-v1");
     const d = r ? JSON.parse(r.value) : {};
-    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref || "female", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
+    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "system", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
   } catch {
-    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "female", onboarded: false, userName: "", role: "" };
+    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "system", onboarded: false, userName: "", role: "" };
   }
 }
 async function saveShelf(data) {
@@ -617,7 +617,7 @@ export default function ShelfLife() {
   const [readerFont, setReaderFont] = useState(17);
   const [wordCard, setWordCard] = useState(null); // {word, loading, phonetic, pos, definition, notFound}
   const [myWords, setMyWords] = useState([]); // [{word, definition, at}]
-  const [voicePref, setVoicePref] = useState("female");
+  const [voicePref, setVoicePref] = useState("system");
   const [syncCode, setSyncCode] = useState(null);
   const [syncInput, setSyncInput] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
@@ -653,7 +653,7 @@ export default function ShelfLife() {
       setTeaching(d.teaching || null);
       setDigitalShelf(d.digitalShelf || []);
       setMyWords(d.myWords || []);
-      setVoicePref(d.voicePref || "female");
+      setVoicePref(d.voicePref2 || "system");
       setOnboarded(d.onboarded || false);
       setUserName(d.userName || "");
       setRole(d.role || "");
@@ -962,7 +962,7 @@ export default function ShelfLife() {
     setTeaching(next.teaching);
     setDigitalShelf(next.digitalShelf);
     setMyWords(next.myWords);
-    setVoicePref(next.voicePref);
+    setVoicePref(next.voicePref2 || next.voicePref || "system");
     setOnboarded(next.onboarded);
     setUserName(next.userName);
     setRole(next.role);
@@ -1266,27 +1266,27 @@ export default function ShelfLife() {
   const FEMALE_HINTS = ["aria", "jenny", "michelle", "emma", "ava", "sonia", "libby", "samantha", "zira", "susan", "natasha", "joanna", "salli", "allison", "paulina", "helena", "sabina", "dalia", "female", "google us english", "google espa"];
   const MALE_HINTS = ["guy", "davis", "andrew", "brian", "christopher", "eric", "roger", "daniel", "alex", "david", "mark", "george", "ryan", "jorge", "diego", "miguel", "male"];
   const pickVoice = (langPrefix) => {
+    if (voicePref === "system") return null; // the default voice always makes sound — that wins
     const lp = (langPrefix || "en").toLowerCase().slice(0, 2);
-    // ONLY voices installed on this device — remote "premium/natural" voices can
-    // report success while producing silence (we learned this the hard way).
-    const local = voices.filter((v) => v.localService);
+    // FRESH list at the moment of speaking — cached voice objects can go stale
+    // and stale voices fail silently (the great sound mystery of this app).
+    const all = window.speechSynthesis?.getVoices?.() || [];
+    const local = all.filter((v) => v.localService);
     const pool = local.filter((v) => v.lang?.toLowerCase().startsWith(lp));
     const candidates = pool.length ? pool : local;
-    if (!candidates.length) return null; // no locals: use the system default (audible)
+    if (!candidates.length) return null;
     const hints = voicePref === "male" ? MALE_HINTS : FEMALE_HINTS;
     const antiHints = voicePref === "male" ? FEMALE_HINTS : MALE_HINTS;
     let best = null, bestScore = -1;
     for (const v of candidates) {
       const n = (v.name || "").toLowerCase();
       let sc = 0;
-      if (n.includes("natural") || n.includes("neural")) sc += 4;
-      if (n.includes("premium") || n.includes("enhanced")) sc += 3;
       if (hints.some((h) => n.includes(h))) sc += 6;
       if (antiHints.some((h) => n.includes(h))) sc -= 6;
       if (sc > bestScore) { bestScore = sc; best = v; }
     }
     return best;
-  };;
+  };;;
 
   // Robust speech: Chrome swallows speak() right after cancel(), gets stuck in a
   // paused state, garbage-collects utterances mid-speech, and some premium voices
@@ -1638,9 +1638,28 @@ export default function ShelfLife() {
         const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:${encodeURIComponent(subj)}${langParam}&maxResults=24${extra}`);
         return await r2.json();
       };
-      collect(await gFetch("&orderBy=newest"), seen, out);
-      // …but "newest" can be sparse; top up with popular picks in the same subject
-      if (out.length < 4) collect(await gFetch(""), seen, out);
+      try {
+        collect(await gFetch("&orderBy=newest"), seen, out);
+        // …but "newest" can be sparse; top up with popular picks in the same subject
+        if (out.length < 4) collect(await gFetch(""), seen, out);
+      } catch { /* Google unreachable on this network — Open Library below */ }
+      // Final fallback: Open Library's newest additions in the same subject
+      if (out.length < 4) {
+        const olSubj = subj.split(" ")[0];
+        const r3 = await fetch(`https://openlibrary.org/search.json?q=subject:${encodeURIComponent(olSubj)}&sort=new&limit=20&fields=key,title,author_name,cover_i,first_publish_year,number_of_pages_median`);
+        const d3 = await r3.json();
+        for (const doc of d3.docs || []) {
+          const t = (doc.title || "").toLowerCase();
+          if (!doc.title || seen.has(t)) continue;
+          seen.add(t);
+          out.push({
+            key: doc.key, title: doc.title, author: (doc.author_name || [])[0] || "",
+            pages: doc.number_of_pages_median || "", year: doc.first_publish_year || "",
+            cover: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : null,
+          });
+          if (out.length >= 8) break;
+        }
+      }
       setFreshBooks(out);
     } catch {
       setFreshBooks([]);
@@ -1951,7 +1970,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v24</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v25</span>
         </p>
       </header>
 
@@ -3935,29 +3954,6 @@ export default function ShelfLife() {
               </div>
             </div>
 
-            {/* Sound check */}
-            <div style={{ marginTop: 22, background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: 12, padding: "16px 18px" }}>
-              <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 18 }}>Sound check 🔊</div>
-              <p style={{ fontSize: 13, color: T.inkSoft, margin: "4px 0 10px" }}>
-                Read-aloud silent? This tests your device's audio and shows exactly what happened.
-              </p>
-              <button style={btn()} onClick={runSoundCheck} disabled={soundCheck?.running}>
-                {soundCheck?.running ? "Testing…" : "Run sound check"}
-              </button>
-              {soundCheck && soundCheck.lines.length > 0 && (
-                <div style={{ marginTop: 10, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 8, padding: "10px 12px", fontSize: 13, fontFamily: "monospace" }}>
-                  {soundCheck.lines.map((l, i) => (
-                    <div key={i} style={{ marginBottom: 4 }}>{l}</div>
-                  ))}
-                  {!soundCheck.running && (
-                    <div style={{ marginTop: 6, color: T.blue, fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
-                      📸 Screenshot this box if you need help — it tells the whole story.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
             {/* Rate Shelf Life */}
             <div style={{ marginTop: 22, background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: 12, padding: "16px 18px", textAlign: "center" }}>
               {!appRated ? (
@@ -3989,6 +3985,17 @@ export default function ShelfLife() {
 
             <div style={{ marginTop: 20, fontSize: 11.5, color: T.inkSoft, textAlign: "center" }}>
               Shelf Life · your shelf, not a race · made in Houston 🤠
+              <div style={{ marginTop: 4 }}>
+                <button style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 11, textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                  onClick={runSoundCheck}>
+                  sound trouble? run a quick check
+                </button>
+              </div>
+              {soundCheck && soundCheck.lines.length > 0 && (
+                <div style={{ marginTop: 8, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, fontFamily: "monospace", textAlign: "left" }}>
+                  {soundCheck.lines.map((l, i) => <div key={i} style={{ marginBottom: 3 }}>{l}</div>)}
+                </div>
+              )}
             </div>
           </div>
 
@@ -4236,10 +4243,15 @@ export default function ShelfLife() {
               <div style={{ fontSize: 11.5, color: T.inkSoft }}>{reader.author}</div>
             </div>
             <div style={{ display: "flex", gap: 5, alignItems: "center", flexShrink: 0, flexWrap: "wrap" }}>
-              <button title={voicePref === "female" ? "Voice: calm female — tap for male" : "Voice: calm male — tap for female"}
+              <button title="Voice: tap to change (system / female / male)"
                 style={{ ...ghostBtn, padding: "4px 9px", fontSize: 15 }}
-                onClick={() => { stopReadAlong(); persist({ voicePref: voicePref === "female" ? "male" : "female" }); flash(voicePref === "female" ? "Voice: calm male 👨" : "Voice: calm female 👩"); }}>
-                {voicePref === "female" ? "👩" : "👨"}
+                onClick={() => {
+                  stopReadAlong();
+                  const next = voicePref === "system" ? "female" : voicePref === "female" ? "male" : "system";
+                  persist({ voicePref2: next });
+                  flash(next === "system" ? "Voice: device default 🔈 (most reliable)" : next === "female" ? "Voice: female 👩" : "Voice: male 👨");
+                }}>
+                {voicePref === "system" ? "🔈" : voicePref === "female" ? "👩" : "👨"}
               </button>
               <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13 }}
                 onClick={() => (readAlong.on ? stopReadAlong() : startReadAlong())}>
