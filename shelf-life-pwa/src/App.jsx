@@ -1322,11 +1322,17 @@ export default function ShelfLife() {
           window.speechSynthesis.cancel();
           const r = new SpeechSynthesisUtterance(u.text);
           r.lang = u.lang; r.rate = u.rate; r.pitch = u.pitch;
-          r.onboundary = origBoundary; r.onend = u.onend; r.onerror = u.onerror;
+          r.onboundary = (e) => { spoke = true; if (origBoundary) origBoundary(e); };
+          r.onstart = () => { spoke = true; };
+          r.onend = u.onend; r.onerror = u.onerror;
           window.__slU = r;
           window.speechSynthesis.resume();
           window.speechSynthesis.speak(r);
         } catch { /* noop */ }
+        // Still nothing? The device itself is muting us — say so.
+        setTimeout(() => {
+          if (!spoke) flash("Can't hear anything? Check your phone's silent switch & media volume 🔈");
+        }, 1500);
       }, 900);
     } catch { /* noop */ }
   };
@@ -1881,7 +1887,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v20</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v21</span>
         </p>
       </header>
 
@@ -2043,6 +2049,18 @@ export default function ShelfLife() {
 
               {/* Empty-state pointers */}
               {/* Fresh on the shelves */}
+              {freshLoading && (
+                <div style={{ fontSize: 12, color: T.inkSoft, margin: "0 0 12px" }}>🔥 Finding fresh books for you…</div>
+              )}
+              {freshBooks && freshBooks.length === 0 && (
+                <div style={{ fontSize: 12, color: T.inkSoft, margin: "0 0 12px" }}>
+                  🔥 Couldn't load new releases just now.
+                  <button style={{ ...ghostBtn, marginLeft: 8, padding: "2px 10px", fontSize: 11 }}
+                    onClick={() => { setFreshBooks(null); setTimeout(loadFreshBooks, 50); }}>
+                    Try again ↻
+                  </button>
+                </div>
+              )}
               {freshBooks && freshBooks.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.stamp, fontWeight: 700, marginBottom: 6 }}>
@@ -2076,9 +2094,11 @@ export default function ShelfLife() {
                 </div>
               )}
 
-              {totalReaders > 1 && (
+              {totalReaders !== null && totalReaders >= 1 && (
                 <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", margin: "0 0 12px" }}>
-                  📚 You're reading alongside {totalReaders.toLocaleString()} readers across Shelf Life
+                  {totalReaders <= 3
+                    ? `📚 You're one of the very first readers on Shelf Life — reader #${totalReaders.toLocaleString()} 🌱`
+                    : `📚 You're reading alongside ${totalReaders.toLocaleString()} readers across Shelf Life`}
                 </div>
               )}
 
