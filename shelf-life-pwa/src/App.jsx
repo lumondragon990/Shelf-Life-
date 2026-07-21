@@ -1666,9 +1666,9 @@ export default function ShelfLife() {
   };
 
   // ----- The Reading Room: this month in the reading world (AI-curated, cached monthly) -----
-  const loadReadingRoom = async () => {
+  const loadReadingRoom = async (force) => {
     const monthKey = new Date().toISOString().slice(0, 7);
-    if (newsDigest?.month === monthKey || newsLoading) return;
+    if ((!force && newsDigest?.month === monthKey && newsDigest?.data) || newsLoading) return;
     setNewsLoading(true);
     try {
       const monthName = new Date().toLocaleString("en-US", { month: "long", year: "numeric" });
@@ -1687,7 +1687,9 @@ export default function ShelfLife() {
       const text = (data.content || []).filter((x) => x.type === "text").map((x) => x.text).join("\n");
       const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
       if (!parsed.anniversaries) throw new Error("bad digest");
-      persist({ newsDigest: { month: monthKey, data: parsed } });
+      // Strip markdown the AI sneaks in (*emphasis*, `code`)
+      const clean = (x) => typeof x === "string" ? x.replace(/[*`]/g, "") : Array.isArray(x) ? x.map(clean) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, clean(v)])) : x;
+      persist({ newsDigest: { month: monthKey, data: clean(parsed) } });
     } catch {
       flash("The Reading Room needs a moment — try again");
     }
@@ -2117,7 +2119,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v28</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v29</span>
         </p>
       </header>
 
@@ -4293,6 +4295,16 @@ export default function ShelfLife() {
 
             {newsLoading && <p style={{ color: T.inkSoft }}>Setting up this month's Reading Room… 📚</p>}
 
+            {!newsLoading && !newsDigest?.data && (
+              <div style={{ textAlign: "center", padding: "30px 10px" }}>
+                <div style={{ fontSize: 40 }}>📰</div>
+                <p style={{ color: T.inkSoft, fontSize: 14, margin: "8px 0 14px" }}>
+                  This month's edition is ready to be opened.
+                </p>
+                <button style={btn()} onClick={() => loadReadingRoom(true)}>Open this month's Reading Room 📰</button>
+              </div>
+            )}
+
             {newsDigest?.data && (
               <div>
                 {/* Anniversaries */}
@@ -4596,8 +4608,8 @@ export default function ShelfLife() {
               <>
                 <div style={{ fontSize: 40 }}>{spotlight.emoji}</div>
                 <div style={{ fontSize: 11, letterSpacing: "0.14em", color: T.stamp, fontWeight: 700, marginTop: 4 }}>TODAY IN THE READING WORLD</div>
-                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: "4px 0" }}>{spotlight.title}</div>
-                <div style={{ fontSize: 14, color: T.inkSoft }}>{spotlight.blurb}</div>
+                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: "4px 0" }}>{(spotlight.title || "").replace(/[*`]/g, "")}</div>
+                <div style={{ fontSize: 14, color: T.inkSoft }}>{(spotlight.blurb || "").replace(/[*`]/g, "")}</div>
                 <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 14 }}>
                   <button style={btn()} onClick={() => { setSpotlight(null); setTab("news"); }}>To the Reading Room 📰</button>
                   <button style={ghostBtn} onClick={() => setSpotlight(null)}>Later</button>
