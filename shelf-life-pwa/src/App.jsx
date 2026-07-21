@@ -810,6 +810,51 @@ export default function ShelfLife() {
     }
   };
 
+  // ----- Readers across the app: a gentle global counter -----
+  const [totalReaders, setTotalReaders] = useState(null);
+  useEffect(() => {
+    if (!loaded) return;
+    (async () => {
+      try {
+        let n = 0;
+        try { const r = await storage.get("stats:readers", true); n = parseInt(JSON.parse(r.value).n) || 0; } catch { /* first ever */ }
+        if (!localStorage.getItem("sl-counted")) {
+          n += 1;
+          await storage.set("stats:readers", JSON.stringify({ n }), true);
+          localStorage.setItem("sl-counted", "1");
+        }
+        setTotalReaders(n);
+      } catch { /* quiet */ }
+    })();
+  }, [loaded]);
+
+  // ----- Chapter-count estimate: fills in "how many chapters" for the teacher -----
+  const [chapGuess, setChapGuess] = useState(""); // "" | "loading" | "done"
+  const estimateChapters = async (title, author) => {
+    setChapGuess("loading");
+    try {
+      const response = await fetch("/api/claude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5", max_tokens: 20,
+          messages: [{ role: "user", content: `How many chapters does the book "${title}"${author ? ` by ${author}` : ""} have? Reply with ONLY a number. If you're not sure, give your best estimate for this specific book — still only a number.` }],
+        }),
+      });
+      const data = await response.json();
+      const text = (data.content || []).filter((x) => x.type === "text").map((x) => x.text).join(" ");
+      const n = parseInt((text.match(/\d{1,3}/) || [])[0]);
+      if (n && n > 0 && n < 100) {
+        setClassForm((f) => ({ ...f, chapters: String(n) }));
+        setChapGuess("done");
+        return;
+      }
+      setChapGuess("");
+    } catch {
+      setChapGuess("");
+    }
+  };
+
   // ----- Custom class rewards (set by the teacher — or a partner bookstore via the teacher) -----
   const saveClassReward = async () => {
     if (!teaching || !rewardForm.prize.trim() || !parseInt(rewardForm.need)) return;
@@ -1064,23 +1109,50 @@ export default function ShelfLife() {
     const q = bookQuery.trim();
     if (!q) return;
     setSearching(true);
-    try {
-      // Show main results immediately…
-      const ol = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=20&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`).then((r) => r.json());
-      setSearchResults(ol.docs || []);
-      // …then let the free-digital badges pop in when Gutenberg answers
+    setSearchResults([]);
+    const mergeIn = (items) => {
+      setSearchResults((prev) => {
+        const seen = new Set((prev || []).map((x) => `${(x.title || "").toLowerCase()}|${((x.author_name || [])[0] || "").toLowerCase()}`));
+        const merged = [...(prev || [])];
+        for (const it of items) {
+          const sig = `${(it.title || "").toLowerCase()}|${((it.author_name || [])[0] || "").toLowerCase()}`;
+          if (it.title && !seen.has(sig)) { seen.add(sig); merged.push(it); }
+        }
+        return merged.slice(0, 24);
+      });
+    };
+    // Google Books answers fast — render it the moment it lands
+    const gbP = fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=16`)
+      .then((r) => r.json())
+      .then((d) => mergeIn((d.items || []).map((it) => {
+        const v = it.volumeInfo || {};
+        return {
+          key: `gb-${it.id}`, title: v.title, author_name: v.authors || [],
+          number_of_pages_median: v.pageCount || null,
+          first_publish_year: (v.publishedDate || "").slice(0, 4) || null,
+          gbCover: v.imageLinks?.smallThumbnail?.replace("http://", "https://") || null,
+        };
+      })))
+      .catch(() => {});
+    // Open Library adds depth when it (eventually) answers
+    const olP = fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=15&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`)
+      .then((r) => r.json())
+      .then((d) => mergeIn(d.docs || []))
+      .catch(() => {});
+    // Stop the spinner as soon as the FIRST source answers
+    await Promise.race([gbP, olP]);
+    setSearching(false);
+    Promise.allSettled([gbP, olP]).then(() => {
+      // Free-digital badges pop in last
       gutenbergLookup(q).then((glist) => {
-        if (!glist.length) return;
+        if (!glist || !glist.length) return;
         setSearchResults((prev) => (prev || []).map((doc) => {
           const g = matchGuten(glist, doc.title);
           return g ? { ...doc, gutenId: g.gid, gutenAuthor: g.author } : doc;
         }));
       });
-    } catch {
-      flash("Search hiccup — check your connection and try again");
-    }
-    setSearching(false);
-  };
+    });
+  };;
 
   // ----- "For you": recommendations based on a finished book (Open Library, free) -----
   const fetchRecs = async (book) => {
@@ -1482,28 +1554,36 @@ export default function ShelfLife() {
       const top = Object.entries(tagScores).sort((a, b) => b[1] - a[1]).map(([t]) => t).find((t) => TAG_SUBJECTS[t]);
       const subj = top ? TAG_SUBJECTS[top] : "fiction";
       const langParam = lang === "es" ? "&langRestrict=es" : "";
-      const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:"${encodeURIComponent(subj)}"${langParam}&orderBy=newest&maxResults=18`);
-      const d = await r.json();
+      const collect = (d, seen, out) => {
+        for (const it of d.items || []) {
+          const v = it.volumeInfo || {};
+          const t = (v.title || "").toLowerCase();
+          if (!v.title || seen.has(t)) continue;
+          seen.add(t);
+          out.push({
+            key: it.id, title: v.title, author: (v.authors || [])[0] || "",
+            pages: v.pageCount || "", year: (v.publishedDate || "").slice(0, 4),
+            cover: v.imageLinks?.smallThumbnail?.replace("http://", "https://") || null,
+          });
+          if (out.length >= 8) break;
+        }
+      };
       const seen = new Set(onShelfTitles);
       const out = [];
-      for (const it of d.items || []) {
-        const v = it.volumeInfo || {};
-        const t = (v.title || "").toLowerCase();
-        if (!v.title || !v.imageLinks?.smallThumbnail || seen.has(t)) continue;
-        seen.add(t);
-        out.push({
-          key: it.id, title: v.title, author: (v.authors || [])[0] || "",
-          pages: v.pageCount || "", year: (v.publishedDate || "").slice(0, 4),
-          cover: v.imageLinks.smallThumbnail.replace("http://", "https://"),
-        });
-        if (out.length >= 8) break;
+      // Newest first…
+      const r1 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:${encodeURIComponent(subj)}${langParam}&orderBy=newest&maxResults=24`);
+      collect(await r1.json(), seen, out);
+      // …but "newest" can be sparse; top up with popular picks in the same subject
+      if (out.length < 4) {
+        const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:${encodeURIComponent(subj)}${langParam}&maxResults=24`);
+        collect(await r2.json(), seen, out);
       }
       setFreshBooks(out);
     } catch {
       setFreshBooks([]);
     }
     setFreshLoading(false);
-  };
+  };;
   useEffect(() => {
     if (tab === "today" && loaded && onboarded) loadFreshBooks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1801,7 +1881,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v19</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v20</span>
         </p>
       </header>
 
@@ -1976,7 +2056,11 @@ export default function ShelfLife() {
                           flex: "0 0 128px", background: T.paper, border: `1px solid ${T.rule}`,
                           borderRadius: 10, padding: 8, textAlign: "center",
                         }}>
-                          <img src={b.cover} alt="" style={{ width: 72, height: 104, objectFit: "cover", borderRadius: 4, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
+                          {b.cover ? (
+                            <img src={b.cover} alt="" style={{ width: 72, height: 104, objectFit: "cover", borderRadius: 4, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
+                          ) : (
+                            <div style={{ width: 72, height: 104, margin: "0 auto", borderRadius: 4, background: spineColor(b.title), boxShadow: "inset -5px 0 rgba(0,0,0,0.18)" }} />
+                          )}
                           <div style={{ fontSize: 11.5, fontWeight: 700, lineHeight: 1.2, marginTop: 5, height: 28, overflow: "hidden" }}>{b.title}</div>
                           <div style={{ fontSize: 10, color: T.inkSoft }}>{b.author}</div>
                           <button
@@ -1989,6 +2073,12 @@ export default function ShelfLife() {
                       );
                     })}
                   </div>
+                </div>
+              )}
+
+              {totalReaders > 1 && (
+                <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", margin: "0 0 12px" }}>
+                  📚 You're reading alongside {totalReaders.toLocaleString()} readers across Shelf Life
                 </div>
               )}
 
@@ -2464,9 +2554,9 @@ export default function ShelfLife() {
                         border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12,
                         background: T.paper, display: "flex", gap: 10,
                       }}>
-                        {r.cover_i ? (
+                        {r.cover_i || r.gbCover ? (
                           <img
-                            src={`https://covers.openlibrary.org/b/id/${r.cover_i}-M.jpg`}
+                            src={r.gbCover || `https://covers.openlibrary.org/b/id/${r.cover_i}-M.jpg`}
                             alt=""
                             style={{ width: 52, height: 76, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }}
                           />
@@ -3087,10 +3177,14 @@ export default function ShelfLife() {
                     placeholder="Book you're reading * (type to search)"
                     value={classForm.book}
                     onChange={(v) => setClassForm({ ...classForm, book: v })}
-                    onPick={(b) => setClassForm({ ...classForm, book: b.title, bookAuthor: b.author || "" })}
+                    onPick={(b) => { setClassForm((f) => ({ ...f, book: b.title, bookAuthor: b.author || "" })); estimateChapters(b.title, b.author || ""); }}
                   />
-                  <input style={input} placeholder="Number of chapters" inputMode="numeric" value={classForm.chapters}
-                    onChange={(e) => setClassForm({ ...classForm, chapters: e.target.value.replace(/\D/g, "") })} />
+                  <div>
+                    <input style={input} placeholder="Number of chapters" inputMode="numeric" value={classForm.chapters}
+                      onChange={(e) => { setChapGuess(""); setClassForm({ ...classForm, chapters: e.target.value.replace(/\D/g, "") }); }} />
+                    {chapGuess === "loading" && <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 3 }}>Counting chapters for you…</div>}
+                    {chapGuess === "done" && <div style={{ fontSize: 11, color: T.green, marginTop: 3 }}>✓ Filled in automatically — adjust if your edition differs</div>}
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
@@ -3155,6 +3249,26 @@ export default function ShelfLife() {
                     </button>
                   </div>
                 </div>
+
+                {roster && roster.length > 0 && (() => {
+                  const avgCh = (roster.reduce((a, x) => a + (x.chapter || 0), 0) / roster.length).toFixed(1);
+                  const weekAgo = Date.now() - 7 * 86400000;
+                  const quizWeek = roster.reduce((a, x) => a + Object.values(x.quizzes || {}).filter((q) => q.at > weekAgo && q.passed).length, 0);
+                  const stale = roster.filter((x) => (x.chapter || 0) === 0 || (x.updatedAt || 0) < weekAgo).map((x) => x.name);
+                  return (
+                    <div style={{
+                      background: "#F5F8FC", border: `1.5px solid ${T.blue}`, borderRadius: 12,
+                      padding: "12px 16px", marginBottom: 14, fontSize: 13.5,
+                    }}>
+                      <strong>{roster.length} reader{roster.length !== 1 ? "s" : ""}</strong> · averaging <strong>chapter {avgCh}</strong> of {teaching.chapters} · <strong>{quizWeek}</strong> quiz{quizWeek !== 1 ? "zes" : ""} passed this week
+                      {stale.length > 0 && (
+                        <div style={{ marginTop: 4, color: T.stamp, fontSize: 12.5 }}>
+                          💛 Could use a check-in: {stale.slice(0, 4).join(", ")}{stale.length > 4 ? ` +${stale.length - 4} more` : ""}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
                   <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: 0 }}>
@@ -3995,6 +4109,172 @@ export default function ShelfLife() {
               You can change this anytime — everything's open to everyone.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* ---------------- READER OVERLAY ---------------- */}
+      {reader && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 80, background: T.paper,
+          display: "flex", flexDirection: "column",
+        }}>
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+            padding: "10px 14px", borderBottom: `1.5px solid ${T.rule}`, background: T.card, flexWrap: "wrap",
+          }}>
+            <div style={{ minWidth: 0, flex: "1 1 140px" }}>
+              <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {reader.title}
+              </div>
+              <div style={{ fontSize: 11.5, color: T.inkSoft }}>{reader.author}</div>
+            </div>
+            <div style={{ display: "flex", gap: 5, alignItems: "center", flexShrink: 0, flexWrap: "wrap" }}>
+              <button title={voicePref === "female" ? "Voice: calm female — tap for male" : "Voice: calm male — tap for female"}
+                style={{ ...ghostBtn, padding: "4px 9px", fontSize: 15 }}
+                onClick={() => { stopReadAlong(); persist({ voicePref: voicePref === "female" ? "male" : "female" }); flash(voicePref === "female" ? "Voice: calm male 👨" : "Voice: calm female 👩"); }}>
+                {voicePref === "female" ? "👩" : "👨"}
+              </button>
+              <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13 }}
+                onClick={() => (readAlong.on ? stopReadAlong() : startReadAlong())}>
+                {readAlong.on ? "⏹ Stop" : "🔊 Read to me"}
+              </button>
+              <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
+              <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
+              <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
+              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopReadAlong(); stopListening(); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "18px 18px", maxWidth: 640, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+            {reader.loading ? (
+              <p style={{ color: T.inkSoft, textAlign: "center", marginTop: 60 }}>Opening your book… 📖</p>
+            ) : (
+              <div>
+                <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", marginBottom: 14 }}>
+                  💡 Tap any word to hear it — tap a 🔊 to hear the whole paragraph
+                </div>
+                <div style={{ fontSize: readerFont, lineHeight: 1.7, fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
+                  {(() => {
+                    const page = reader.pages[reader.page];
+                    const paras = [];
+                    let cursor = 0;
+                    for (const m of page.split(/(\n\s*\n)/)) {
+                      if (/^\n\s*\n$/.test(m)) { cursor += m.length; continue; }
+                      if (m.length) paras.push({ start: cursor, end: cursor + m.length });
+                      cursor += m.length;
+                    }
+                    const renderWords = (start, end) => {
+                      const segs = page.slice(start, end).split(/(\s+)/);
+                      let off = start;
+                      return segs.map((seg, i) => {
+                        const segStart = off;
+                        off += seg.length;
+                        if (!/\S/.test(seg)) return seg;
+                        const lit = readAlong.on && readAlong.char >= segStart && readAlong.char < segStart + seg.length;
+                        return (
+                          <span key={i} onClick={() => lookupWord(seg)}
+                            style={{ cursor: "pointer", borderRadius: 3, background: lit ? "#FFE9A8" : "transparent", transition: "background .1s" }}>
+                            {seg}
+                          </span>
+                        );
+                      });
+                    };
+                    return paras.map((para, pi) => (
+                      <div key={pi} style={{ marginBottom: 16, whiteSpace: "pre-wrap" }}>
+                        <button
+                          aria-label="Listen to this paragraph"
+                          title="Listen to this paragraph"
+                          onClick={() => speakRange(para.start, para.end)}
+                          style={{
+                            background: "none", border: "none", cursor: "pointer",
+                            fontSize: Math.max(12, readerFont - 4), opacity: 0.45,
+                            padding: "0 6px 0 0", verticalAlign: "baseline",
+                          }}>
+                          🔊
+                        </button>
+                        {renderWords(para.start, para.end)}
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {practice && (
+            <div style={{ borderTop: `1.5px solid ${T.green}`, background: "#F0F5F0", padding: "12px 16px", maxHeight: "42vh", overflowY: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <strong style={{ fontSize: 14 }}>🎙 Practice reading out loud</strong>
+                <button aria-label="Close practice" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 15 }} onClick={() => { stopListening(); setPractice(null); }}>✕</button>
+              </div>
+              <p style={{ fontSize: 12, color: T.inkSoft, margin: "4px 0 8px" }}>
+                Read this passage out loud at your own pace — the app listens and shows which words it heard. No grades, just practice.
+              </p>
+              <div style={{ fontSize: 15, lineHeight: 1.7, background: T.card, border: `1px solid ${T.rule}`, borderRadius: 8, padding: "10px 12px" }}>
+                {practice.words.map((w, i) => (
+                  <span key={i} style={{
+                    marginRight: 5, borderRadius: 3, padding: "0 2px",
+                    background: practice.matched ? (practice.matched[i] ? "#CDE7D2" : "#F3DBD6") : "transparent",
+                  }}>
+                    {w}
+                  </span>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+                {!practice.listening && !practice.done && (
+                  <button style={btn(T.green)} onClick={listenPractice}>● Start reading (I'm listening)</button>
+                )}
+                {practice.listening && (
+                  <>
+                    <button style={btn(T.stamp)} onClick={stopListening}>⏹ I'm done</button>
+                    <span style={{ fontSize: 13, color: T.stamp, fontWeight: 700 }}>Listening… read the passage above</span>
+                  </>
+                )}
+                {practice.done && (
+                  <>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: practice.pct >= 70 ? T.green : T.ink }}>
+                      {practice.pct >= 70 ? `🎉 ${practice.pct}% — beautiful reading! +5 pts` : `${practice.pct}% heard — +5 pts for practicing. Green = heard, rosy = try those again.`}
+                    </span>
+                    <button style={ghostBtn} onClick={listenPractice}>Try again ↻</button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {wordCard && (
+            <div style={{ borderTop: `1.5px solid ${T.blue}`, background: "#F5F8FC", padding: "10px 16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0 }}>
+                  <strong style={{ fontSize: 17 }}>{wordCard.word}</strong>
+                  {wordCard.phonetic && <span style={{ marginLeft: 8, color: T.inkSoft, fontSize: 13 }}>{wordCard.phonetic}</span>}
+                  {wordCard.pos && <em style={{ marginLeft: 8, color: T.blue, fontSize: 13 }}>{wordCard.pos}</em>}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ ...ghostBtn, padding: "5px 12px", fontSize: 13 }} onClick={() => speakWord(wordCard.word)}>🔊 Hear it</button>
+                  <button aria-label="Close" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 16 }} onClick={() => setWordCard(null)}>✕</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 14, marginTop: 4 }}>
+                {wordCard.loading ? "Looking it up…" : wordCard.notFound
+                  ? "Couldn't find a definition for that one — but you can still hear it out loud."
+                  : <>{wordCard.definition}{wordCard.ai && <span style={{ marginLeft: 6, fontSize: 11, color: T.blue }}>✨</span>}</>}
+              </div>
+            </div>
+          )}
+
+          {!reader.loading && (
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+              padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", borderTop: `1.5px solid ${T.rule}`, background: T.card,
+            }}>
+              <button style={{ ...ghostBtn, opacity: reader.page === 0 ? 0.4 : 1 }} disabled={reader.page === 0} onClick={() => turnPage(-1)}>← Back</button>
+              <span style={{ fontSize: 12, color: T.inkSoft }}>
+                Page {reader.page + 1} of {reader.pages.length} · {Math.round(((reader.page + 1) / reader.pages.length) * 100)}%
+              </span>
+              <button style={{ ...btn(T.green), opacity: reader.page >= reader.pages.length - 1 ? 0.4 : 1 }} disabled={reader.page >= reader.pages.length - 1} onClick={() => turnPage(1)}>Next →</button>
+            </div>
+          )}
         </div>
       )}
 
