@@ -1577,13 +1577,18 @@ export default function ShelfLife() {
       const seen = new Set(onShelfTitles);
       const out = [];
       // Newest first…
-      const r1 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:${encodeURIComponent(subj)}${langParam}&orderBy=newest&maxResults=24`);
-      collect(await r1.json(), seen, out);
+      const langQ = lang === "es" ? "&langRestrict=es" : "";
+      const gFetch = async (extra) => {
+        try {
+          const r = await fetch(`/api/gbooks?q=${encodeURIComponent("subject:" + subj)}${langQ}&maxResults=24${extra}`);
+          if (r.ok) return await r.json();
+        } catch { /* proxy missing? fall through */ }
+        const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:${encodeURIComponent(subj)}${langParam}&maxResults=24${extra}`);
+        return await r2.json();
+      };
+      collect(await gFetch("&orderBy=newest"), seen, out);
       // …but "newest" can be sparse; top up with popular picks in the same subject
-      if (out.length < 4) {
-        const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:${encodeURIComponent(subj)}${langParam}&maxResults=24`);
-        collect(await r2.json(), seen, out);
-      }
+      if (out.length < 4) collect(await gFetch(""), seen, out);
       setFreshBooks(out);
     } catch {
       setFreshBooks([]);
@@ -1602,8 +1607,15 @@ export default function ShelfLife() {
     let text = "";
     try {
       const q = `intitle:${title}` + (author ? ` inauthor:${author}` : "");
-      const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=1`);
-      const d = await r.json();
+      let d;
+      try {
+        const r = await fetch(`/api/gbooks?q=${encodeURIComponent(q)}&maxResults=1`);
+        if (!r.ok) throw new Error("proxy");
+        d = await r.json();
+      } catch {
+        const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=1`);
+        d = await r2.json();
+      }
       text = d.items?.[0]?.volumeInfo?.description || "";
       if (text.length > 380) text = text.slice(0, 380).replace(/\s+\S*$/, "") + "…";
     } catch { /* fall through to AI */ }
@@ -1887,7 +1899,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v21</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v22</span>
         </p>
       </header>
 
