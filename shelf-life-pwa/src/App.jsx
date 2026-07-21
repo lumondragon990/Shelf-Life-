@@ -595,6 +595,12 @@ export default function ShelfLife() {
   const [aiNextLoading, setAiNextLoading] = useState(false);
   const [morePicks, setMorePicks] = useState(null);
   const [morePicksLoading, setMorePicksLoading] = useState(false);
+  const [blurbs, setBlurbs] = useState({}); // resultKey -> {loading, text}
+  const [appRating, setAppRating] = useState(0);
+  const [appFeedback, setAppFeedback] = useState("");
+  const [appRated, setAppRated] = useState(false);
+  const [freshBooks, setFreshBooks] = useState(null);
+  const [freshLoading, setFreshLoading] = useState(false);
   const [points, setPoints] = useState(0);
   const [quizResults, setQuizResults] = useState({}); // bookId -> {score, total, passed, at}
   const [bookQuiz, setBookQuiz] = useState(null); // {bookId, title, loading, questions, answers, submitted, score, earned}
@@ -1198,9 +1204,9 @@ export default function ShelfLife() {
       let sc = 0;
       if (n.includes("natural")) sc += 8;
       if (n.includes("neural")) sc += 8;
-      if (n.includes("online")) sc += 3;
-      if (n.includes("google")) sc += 5;
-      if (n.includes("premium") || n.includes("enhanced")) sc += 5;
+      if (v.localService) sc += 7; // local voices actually make sound reliably
+      if (n.includes("google")) sc += 3;
+      if (n.includes("premium") || n.includes("enhanced")) sc += 4;
       if (hints.some((h) => n.includes(h))) sc += 6;
       if (antiHints.some((h) => n.includes(h))) sc -= 6;
       if (sc > bestScore) { bestScore = sc; best = v; }
@@ -1214,38 +1220,45 @@ export default function ShelfLife() {
   // default voice if the fancy one produces nothing.
   const safeSpeak = (u) => {
     try {
-      window.__slU = u; // keep a reference so Chrome's GC can't eat it mid-speech
+      window.__slU = u; // hold a reference so Chrome's GC can't eat it mid-speech
       let spoke = false;
       const origBoundary = u.onboundary;
       u.onboundary = (e) => { spoke = true; if (origBoundary) origBoundary(e); };
       const origStart = u.onstart;
-      u.onstart = (e) => { spoke = true; if (origStart) origStart(e); };
+      u.onstart = () => { spoke = true; if (origStart) origStart(); };
+
+      // CRITICAL: cancel + speak SYNCHRONOUSLY inside the user's tap.
+      // Any setTimeout before the first speak() breaks the gesture chain on
+      // phones and produces total silence.
       window.speechSynthesis.cancel();
+      window.speechSynthesis.resume(); // un-stick a paused engine (iOS/Chrome quirk)
+      window.speechSynthesis.speak(u);
+
+      // Chrome desktop pauses long utterances after ~15s with some voices —
+      // a periodic resume keeps it talking. Harmless elsewhere.
+      const keepAlive = setInterval(() => {
+        if (!window.speechSynthesis.speaking) { clearInterval(keepAlive); return; }
+        window.speechSynthesis.resume();
+      }, 5000);
+
+      // Watchdog: if nothing was heard shortly after, retry once with the
+      // device's DEFAULT voice (a flaky premium voice is the usual culprit).
       setTimeout(() => {
+        if (spoke || u.__retried) return;
+        u.__retried = true;
         try {
-          window.speechSynthesis.resume(); // un-stick a paused engine
-          window.speechSynthesis.speak(u);
+          window.speechSynthesis.cancel();
+          const r = new SpeechSynthesisUtterance(u.text);
+          r.lang = u.lang; r.rate = u.rate; r.pitch = u.pitch;
+          r.onboundary = origBoundary; r.onend = u.onend; r.onerror = u.onerror;
+          window.__slU = r;
+          window.speechSynthesis.resume();
+          window.speechSynthesis.speak(r);
         } catch { /* noop */ }
-        // If nothing came out within 1.5s, retry once with the default voice
-        setTimeout(() => {
-          if (spoke || u.__retried) return;
-          try {
-            window.speechSynthesis.cancel();
-            const r = new SpeechSynthesisUtterance(u.text);
-            r.lang = u.lang; r.rate = u.rate; r.pitch = u.pitch;
-            r.onboundary = u.onboundary; r.onend = u.onend;
-            r.__retried = true;
-            u.__retried = true;
-            window.__slU = r;
-            window.speechSynthesis.resume();
-            window.speechSynthesis.speak(r);
-          } catch { /* noop */ }
-        }, 1500);
-      }, 80);
+      }, 900);
     } catch { /* noop */ }
   };
 
-  // ----- Read to me: speaks the page, highlighting each word (karaoke mode) -----
   const speakRange = (start, end) => {
     if (!reader?.pages?.length) return;
     try {
@@ -1460,6 +1473,82 @@ export default function ShelfLife() {
     if (earned) { celebrate(); flash("You finished the whole book! +25 pts 🎉"); }
   };
 
+  // ----- Fresh on the shelves: new releases matched to the reader's taste -----
+  const loadFreshBooks = async () => {
+    if (freshBooks || freshLoading) return;
+    setFreshLoading(true);
+    try {
+      const { tagScores, lang } = quiz ? scoreQuiz(quiz) : { tagScores: {}, lang: "en" };
+      const top = Object.entries(tagScores).sort((a, b) => b[1] - a[1]).map(([t]) => t).find((t) => TAG_SUBJECTS[t]);
+      const subj = top ? TAG_SUBJECTS[top] : "fiction";
+      const langParam = lang === "es" ? "&langRestrict=es" : "";
+      const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=subject:"${encodeURIComponent(subj)}"${langParam}&orderBy=newest&maxResults=18`);
+      const d = await r.json();
+      const seen = new Set(onShelfTitles);
+      const out = [];
+      for (const it of d.items || []) {
+        const v = it.volumeInfo || {};
+        const t = (v.title || "").toLowerCase();
+        if (!v.title || !v.imageLinks?.smallThumbnail || seen.has(t)) continue;
+        seen.add(t);
+        out.push({
+          key: it.id, title: v.title, author: (v.authors || [])[0] || "",
+          pages: v.pageCount || "", year: (v.publishedDate || "").slice(0, 4),
+          cover: v.imageLinks.smallThumbnail.replace("http://", "https://"),
+        });
+        if (out.length >= 8) break;
+      }
+      setFreshBooks(out);
+    } catch {
+      setFreshBooks([]);
+    }
+    setFreshLoading(false);
+  };
+  useEffect(() => {
+    if (tab === "today" && loaded && onboarded) loadFreshBooks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, loaded, onboarded]);
+
+  // ----- Quick book summaries in search results -----
+  const fetchBlurb = async (key, title, author) => {
+    if (blurbs[key]?.text || blurbs[key]?.loading) { setBlurbs((b) => ({ ...b, [key]: { ...b[key], open: !b[key].open } })); return; }
+    setBlurbs((b) => ({ ...b, [key]: { loading: true, open: true } }));
+    let text = "";
+    try {
+      const q = `intitle:${title}` + (author ? ` inauthor:${author}` : "");
+      const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=1`);
+      const d = await r.json();
+      text = d.items?.[0]?.volumeInfo?.description || "";
+      if (text.length > 380) text = text.slice(0, 380).replace(/\s+\S*$/, "") + "…";
+    } catch { /* fall through to AI */ }
+    if (!text) {
+      try {
+        const r = await fetch("/api/claude", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5", max_tokens: 200,
+            messages: [{ role: "user", content: `In 2 short, friendly sentences and with no spoilers, tell a beginner reader what the book "${title}"${author ? ` by ${author}` : ""} is about. If you don't know it, say "This one's a bit of a mystery to us — sometimes that's the fun part!" Respond with only the summary.` }],
+          }),
+        });
+        const d = await r.json();
+        text = (d.content || []).filter((x) => x.type === "text").map((x) => x.text).join(" ").trim();
+      } catch { /* noop */ }
+    }
+    setBlurbs((b) => ({ ...b, [key]: { text: text || "Couldn't find a summary for this one.", open: true, loading: false } }));
+  };
+
+  // ----- Rate the app (feedback lands in shared storage for the founder) -----
+  const submitAppRating = async () => {
+    if (!appRating) return;
+    try {
+      await storage.set(`apprating:${String(Date.now()).padStart(15, "0")}-${uid()}`,
+        JSON.stringify({ stars: appRating, note: appFeedback.trim().slice(0, 300), at: Date.now() }), true);
+    } catch { /* still thank them */ }
+    setAppRated(true);
+    celebrate();
+  };
+
   // ----- "More like this": live wider-library picks matched to quiz taste -----
   const TAG_SUBJECTS = {
     Funny: "humorous fiction", Adventure: "adventure stories", Heartwarming: "friendship fiction",
@@ -1506,19 +1595,13 @@ export default function ShelfLife() {
 
   // ----- First-run onboarding -----
   const finishOnboarding = (chosenRole) => {
-    const name = obName.trim().slice(0, 30);
-    persist({ onboarded: true, userName: name, role: chosenRole });
-    if (name) {
-      setJoinForm((f) => ({ ...f, name }));
-      setPostForm((f) => ({ ...f, name }));
-      if (chosenRole === "teacher" || chosenRole === "family") setClassForm((f) => ({ ...f, teacher: name, kind: chosenRole === "family" ? "family" : "class" }));
-    }
-    if (chosenRole === "teacher") { setTab("classroom"); setClassMode("teacher-setup"); }
-    else if (chosenRole === "family") { setTab("classroom"); setClassMode("teacher-setup"); }
+    persist({ onboarded: true, role: chosenRole });
+    if (chosenRole === "teacher") { setClassForm((f) => ({ ...f, kind: "class" })); setTab("classroom"); setClassMode("teacher-setup"); }
+    else if (chosenRole === "family") { setClassForm((f) => ({ ...f, kind: "family" })); setTab("classroom"); setClassMode("teacher-setup"); }
     else if (chosenRole === "student") { setTab("classroom"); setClassMode("student-join"); }
-    else { setTab("personality"); }
-    flash(name ? `Welcome to Shelf Life, ${name}! 🌱` : "Welcome to Shelf Life! 🌱");
-  };
+    else { setTab("today"); }
+    flash("Welcome to Shelf Life! 🌱");
+  };;
 
   // ----- Device sync: move your shelf to another device with a 6-letter code -----
   const createSyncCode = async () => {
@@ -1718,7 +1801,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v18</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v19</span>
         </p>
       </header>
 
@@ -1879,6 +1962,36 @@ export default function ShelfLife() {
               )}
 
               {/* Empty-state pointers */}
+              {/* Fresh on the shelves */}
+              {freshBooks && freshBooks.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.stamp, fontWeight: 700, marginBottom: 6 }}>
+                    🔥 FRESH ON THE SHELVES — NEW THIS SEASON
+                  </div>
+                  <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 6 }}>
+                    {freshBooks.map((b) => {
+                      const owned = onShelfTitles.has(b.title.toLowerCase());
+                      return (
+                        <div key={b.key} style={{
+                          flex: "0 0 128px", background: T.paper, border: `1px solid ${T.rule}`,
+                          borderRadius: 10, padding: 8, textAlign: "center",
+                        }}>
+                          <img src={b.cover} alt="" style={{ width: 72, height: 104, objectFit: "cover", borderRadius: 4, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
+                          <div style={{ fontSize: 11.5, fontWeight: 700, lineHeight: 1.2, marginTop: 5, height: 28, overflow: "hidden" }}>{b.title}</div>
+                          <div style={{ fontSize: 10, color: T.inkSoft }}>{b.author}</div>
+                          <button
+                            style={{ ...(owned ? ghostBtn : btn(T.green)), marginTop: 5, padding: "3px 10px", fontSize: 10.5, opacity: owned ? 0.6 : 1 }}
+                            disabled={owned}
+                            onClick={() => addBook({ title: b.title, author: b.author, pages: b.pages || 200, status: "want" })}>
+                            {owned ? "✓" : "+ Shelf"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Word of the day (from My Words) */}
               {myWords.length > 0 && (() => {
                 const w = myWords[new Date().getDate() % myWords.length];
@@ -2135,6 +2248,10 @@ export default function ShelfLife() {
                 {reading.map((b) => (
                   <BookRow key={b.id} book={b} onRemove={() => removeBook(b.id)}>
                     <div style={{ marginTop: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                        <Stars value={b.rating} onChange={(n) => updateBook(b.id, { rating: n })} size={16} />
+                        <span style={{ fontSize: 11, color: T.inkSoft }}>{b.rating ? "" : "rate it as you go"}</span>
+                      </div>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.inkSoft }}>
                         <span>Page {b.currentPage} of {b.pages}</span>
                         <span>{Math.round((b.currentPage / b.pages) * 100)}%</span>
@@ -2361,6 +2478,16 @@ export default function ShelfLife() {
                           <div style={{ fontSize: 12, color: T.inkSoft }}>
                             {author}{r.first_publish_year ? ` · ${r.first_publish_year}` : ""}{pages ? ` · ${pages} pages` : ""}
                           </div>
+                          <button
+                            style={{ background: "none", border: "none", color: T.blue, cursor: "pointer", fontSize: 12, fontWeight: 700, padding: 0, textAlign: "left", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                            onClick={() => fetchBlurb(r.key, r.title, author)}>
+                            {blurbs[r.key]?.open ? "Hide summary ▲" : "What's it about? ▼"}
+                          </button>
+                          {blurbs[r.key]?.open && (
+                            <div style={{ fontSize: 12.5, color: T.ink, background: "#F5F8FC", borderRadius: 8, padding: "6px 9px" }}>
+                              {blurbs[r.key].loading ? "Getting the gist…" : blurbs[r.key].text}
+                            </div>
+                          )}
                           {r.gutenId && (
                             <span style={{ fontSize: 10.5, fontWeight: 700, color: T.blue, letterSpacing: "0.06em" }}>
                               📱 FREE DIGITAL — read it in this app
@@ -3610,10 +3737,40 @@ export default function ShelfLife() {
               </div>
             </div>
 
+            {/* Rate Shelf Life */}
+            <div style={{ marginTop: 22, background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: 12, padding: "16px 18px", textAlign: "center" }}>
+              {!appRated ? (
+                <div>
+                  <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 18 }}>Enjoying Shelf Life? ⭐</div>
+                  <p style={{ fontSize: 13, color: T.inkSoft, margin: "4px 0 10px" }}>Your rating goes straight to the person building this app.</p>
+                  <div style={{ display: "flex", justifyContent: "center" }}>
+                    <Stars value={appRating} onChange={setAppRating} size={30} />
+                  </div>
+                  <input
+                    style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", border: `1.5px solid ${T.rule}`, borderRadius: 8, background: T.paper, color: T.ink, fontSize: 14, fontFamily: "'Atkinson Hyperlegible', sans-serif", outline: "none", marginTop: 10 }}
+                    placeholder="One thing you'd change or love? (optional)"
+                    maxLength={300}
+                    value={appFeedback}
+                    onChange={(e) => setAppFeedback(e.target.value)}
+                  />
+                  <button style={{ ...btn(), marginTop: 10, opacity: appRating ? 1 : 0.5 }} disabled={!appRating} onClick={submitAppRating}>
+                    Send my rating
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 32 }}>💛</div>
+                  <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 18 }}>Thank you!</div>
+                  <p style={{ fontSize: 13, color: T.inkSoft, margin: "4px 0 0" }}>Every rating helps this little app grow.</p>
+                </div>
+              )}
+            </div>
+
             <div style={{ marginTop: 20, fontSize: 11.5, color: T.inkSoft, textAlign: "center" }}>
               Shelf Life · your shelf, not a race · made in Houston 🤠
             </div>
           </div>
+
         )}
 
         {/* ---------------- REWARDS ---------------- */}
@@ -3799,249 +3956,45 @@ export default function ShelfLife() {
       {loaded && !onboarded && (
         <div style={{
           position: "fixed", inset: 0, zIndex: 90, background: T.paper,
-          display: "flex", alignItems: "center", justifyContent: "center", padding: 18,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 18, overflowY: "auto",
         }}>
-          <div style={{ maxWidth: 460, width: "100%", textAlign: "center" }}>
-            {/* mini shelf */}
+          <div style={{ maxWidth: 470, width: "100%", textAlign: "center" }}>
             <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 4, height: 46 }}>
               {[["#2B5EA7",34],["#C24632",42],["#3E7C59",30],["#D9A03F",38],["#7C5CB0",44],["#B85C8A",33],["#4A8C9E",40]].map(([c,h],i)=>(
                 <div key={i} style={{ width: 16 + (i%3)*4, height: h, background: c, borderRadius: "3px 3px 0 0", boxShadow: "inset -3px 0 rgba(0,0,0,0.18)" }} />
               ))}
             </div>
-            <div style={{ height: 9, background: "#8A6B45", borderRadius: 3, boxShadow: "0 3px 0 #6E5334", margin: "0 40px 20px" }} />
+            <div style={{ height: 9, background: "#8A6B45", borderRadius: 3, boxShadow: "0 3px 0 #6E5334", margin: "0 40px 18px" }} />
 
-            {obStep === 0 && (
-              <div style={{ animation: "rise .3s ease" }}>
-                <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 34, margin: 0 }}>Shelf Life</h1>
-                <p style={{ fontFamily: "'Fraunces', serif", fontStyle: "italic", fontSize: 17, color: T.blue, margin: "8px 0 4px" }}>
-                  Your shelf, not a race.
-                </p>
-                <p style={{ fontSize: 15, color: T.inkSoft, margin: "0 0 22px" }}>
-                  Five pages today is a win. So is one. This app cheers for every reader — especially the slow ones.
-                </p>
-                <input
-                  style={{
-                    width: "100%", boxSizing: "border-box", padding: "12px 14px", textAlign: "center",
-                    border: `1.5px solid ${T.rule}`, borderRadius: 10, background: T.card,
-                    color: T.ink, fontSize: 17, fontFamily: "'Atkinson Hyperlegible', sans-serif", outline: "none",
-                  }}
-                  placeholder="What's your first name?"
-                  maxLength={30}
-                  value={obName}
-                  onChange={(e) => setObName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && setObStep(1)}
-                />
-                <button style={{ ...btn(), width: "100%", marginTop: 12, padding: "12px", fontSize: 16 }}
-                  onClick={() => setObStep(1)}>
-                  {obName.trim() ? `Nice to meet you, ${obName.trim()} →` : "Let's go →"}
+            <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 34, margin: 0 }}>Shelf Life</h1>
+            <p style={{ fontFamily: "'Fraunces', serif", fontStyle: "italic", fontSize: 17, color: T.blue, margin: "6px 0 2px" }}>
+              Your shelf, not a race.
+            </p>
+            <p style={{ fontSize: 14.5, color: T.inkSoft, margin: "0 0 20px" }}>
+              Five pages today is a win. Who's reading?
+            </p>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, textAlign: "center" }}>
+              {[
+                ["myself", "📚", "Myself", "Track my books at my own pace"],
+                ["student", "🎒", "I'm a student", "Join my class with a code"],
+                ["teacher", "🍎", "I'm a teacher", "Set up my class"],
+                ["family", "👨‍👩‍👧", "We're a family", "Read together at home"],
+              ].map(([role, emoji, label, desc]) => (
+                <button key={role} onClick={() => finishOnboarding(role)} style={{
+                  background: T.card, border: `2px solid ${T.rule}`, borderRadius: 14,
+                  padding: "18px 14px", cursor: "pointer", fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                }}>
+                  <div style={{ fontSize: 30 }}>{emoji}</div>
+                  <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 17, color: T.ink }}>{label}</div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2 }}>{desc}</div>
                 </button>
-              </div>
-            )}
-
-            {obStep === 1 && (
-              <div style={{ animation: "rise .3s ease" }}>
-                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 24, margin: "0 0 4px" }}>
-                  Who's reading{obName.trim() ? `, ${obName.trim()}` : ""}?
-                </h2>
-                <p style={{ fontSize: 13.5, color: T.inkSoft, margin: "0 0 16px" }}>This just helps us open the right door first.</p>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {[
-                    ["reader", "🌱", "I'm reading for me", "Track books, find your taste, go at your own pace"],
-                    ["student", "🎒", "I'm a student", "Join your class with the code your teacher gave you"],
-                    ["teacher", "🍎", "I'm a teacher", "Set up your class, see chapters & quiz progress"],
-                    ["family", "👨‍👩‍👧", "We're a family", "Read together at home with family rewards"],
-                  ].map(([id, emoji, label, desc]) => (
-                    <button key={id} onClick={() => finishOnboarding(id)} style={{
-                      display: "flex", gap: 12, alignItems: "center", textAlign: "left",
-                      background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: 12,
-                      padding: "12px 16px", cursor: "pointer", fontFamily: "'Atkinson Hyperlegible', sans-serif",
-                    }}>
-                      <span style={{ fontSize: 26 }}>{emoji}</span>
-                      <span>
-                        <span style={{ display: "block", fontWeight: 700, fontSize: 15.5, color: T.ink }}>{label}</span>
-                        <span style={{ display: "block", fontSize: 12.5, color: T.inkSoft }}>{desc}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <button style={{ background: "none", border: "none", color: T.inkSoft, fontSize: 13, marginTop: 12, cursor: "pointer" }}
-                  onClick={() => setObStep(0)}>
-                  ← back
-                </button>
-              </div>
-            )}
+              ))}
+            </div>
+            <p style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 16 }}>
+              You can change this anytime — everything's open to everyone.
+            </p>
           </div>
-        </div>
-      )}
-
-      {/* ---------------- READER OVERLAY ---------------- */}
-      {reader && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 80, background: T.paper,
-          display: "flex", flexDirection: "column",
-        }}>
-          <div style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
-            padding: "12px 16px", borderBottom: `1.5px solid ${T.rule}`, background: T.card,
-          }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {reader.title}
-              </div>
-              <div style={{ fontSize: 12, color: T.inkSoft }}>{reader.author}</div>
-            </div>
-            <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-              <button title={voicePref === "female" ? "Voice: calm female — tap for male" : "Voice: calm male — tap for female"}
-                style={{ ...ghostBtn, padding: "4px 10px", fontSize: 15 }}
-                onClick={() => { stopReadAlong(); persist({ voicePref: voicePref === "female" ? "male" : "female" }); flash(voicePref === "female" ? "Voice: calm male 👨" : "Voice: calm female 👩"); }}>
-                {voicePref === "female" ? "👩" : "👨"}
-              </button>
-              <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 12px", fontSize: 13 }}
-                onClick={() => (readAlong.on ? stopReadAlong() : startReadAlong())}>
-                {readAlong.on ? "⏹ Stop" : "🔊 Read to me"}
-              </button>
-              <button style={{ ...ghostBtn, padding: "4px 10px", fontSize: 13 }} onClick={startPractice}>🎙</button>
-              <button title="Switch reading voice" style={{ ...ghostBtn, padding: "4px 10px", fontSize: 13 }}
-                onClick={() => { const nextV = voicePref === "female" ? "male" : "female"; persist({ voicePref: nextV }); stopReadAlong(); flash(nextV === "male" ? "Voice: calm male 👨" : "Voice: calm female 👩"); }}>
-                {voicePref === "female" ? "👩" : "👨"}
-              </button>
-              <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 10px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
-              <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 10px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
-              <button style={{ ...btn(T.stamp), padding: "6px 14px" }} onClick={() => { stopReadAlong(); setWordCard(null); setReader(null); }}>Close</button>
-            </div>
-          </div>
-
-          <div style={{ flex: 1, overflowY: "auto", padding: "22px 18px", maxWidth: 640, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
-            {reader.loading ? (
-              <p style={{ color: T.inkSoft, textAlign: "center", marginTop: 60 }}>Opening your book… 📖</p>
-            ) : (
-              <div>
-                <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", marginBottom: 14 }}>
-                  💡 Tap any word to hear it and see what it means
-                </div>
-                <div style={{ fontSize: readerFont, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
-                  {(() => {
-                    const page = reader.pages[reader.page];
-                    // Split into paragraphs (blank-line separated), keeping absolute offsets
-                    const paras = [];
-                    let cursor = 0;
-                    for (const m of page.split(/(\n\s*\n)/)) {
-                      if (/^\n\s*\n$/.test(m)) { cursor += m.length; continue; }
-                      if (m.length) paras.push({ start: cursor, end: cursor + m.length });
-                      cursor += m.length;
-                    }
-                    const renderWords = (start, end) => {
-                      const segs = page.slice(start, end).split(/(\s+)/);
-                      let off = start;
-                      return segs.map((seg, i) => {
-                        const segStart = off;
-                        off += seg.length;
-                        if (!/\S/.test(seg)) return seg;
-                        const lit = readAlong.on && readAlong.char >= segStart && readAlong.char < segStart + seg.length;
-                        return (
-                          <span key={i} onClick={() => lookupWord(seg)}
-                            style={{ cursor: "pointer", borderRadius: 3, background: lit ? "#FFE9A8" : "transparent", transition: "background .1s" }}>
-                            {seg}
-                          </span>
-                        );
-                      });
-                    };
-                    return paras.map((para, pi) => (
-                      <div key={pi} style={{ marginBottom: 16, whiteSpace: "pre-wrap" }}>
-                        <button
-                          aria-label="Listen to this paragraph"
-                          title="Listen to this paragraph"
-                          onClick={() => speakRange(para.start, para.end)}
-                          style={{
-                            background: "none", border: "none", cursor: "pointer",
-                            fontSize: Math.max(12, readerFont - 4), opacity: 0.45,
-                            padding: "0 6px 0 0", verticalAlign: "baseline",
-                          }}>
-                          🔊
-                        </button>
-                        {renderWords(para.start, para.end)}
-                      </div>
-                    ));
-                  })()}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {practice && (
-            <div style={{ borderTop: `1.5px solid ${T.green}`, background: "#F0F5F0", padding: "12px 16px", maxHeight: "42vh", overflowY: "auto" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <strong style={{ fontSize: 14 }}>🎙 Practice reading out loud</strong>
-                <button aria-label="Close practice" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 15 }} onClick={() => { stopListening(); setPractice(null); }}>✕</button>
-              </div>
-              <p style={{ fontSize: 12, color: T.inkSoft, margin: "4px 0 8px" }}>
-                Read this passage out loud at your own pace — the app listens and shows which words it heard. No grades, just practice.
-              </p>
-              <div style={{ fontSize: 15, lineHeight: 1.7, background: T.card, border: `1px solid ${T.rule}`, borderRadius: 8, padding: "10px 12px" }}>
-                {practice.words.map((w, i) => (
-                  <span key={i} style={{
-                    marginRight: 5, borderRadius: 3, padding: "0 2px",
-                    background: practice.matched ? (practice.matched[i] ? "#CDE7D2" : "#F3DBD6") : "transparent",
-                  }}>
-                    {w}
-                  </span>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
-                {!practice.listening && !practice.done && (
-                  <button style={btn(T.green)} onClick={listenPractice}>● Start reading (I'm listening)</button>
-                )}
-                {practice.listening && (
-                  <>
-                    <button style={btn(T.stamp)} onClick={stopListening}>⏹ I'm done</button>
-                    <span style={{ fontSize: 13, color: T.stamp, fontWeight: 700 }}>Listening… read the passage above</span>
-                  </>
-                )}
-                {practice.done && (
-                  <>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: practice.pct >= 70 ? T.green : T.ink }}>
-                      {practice.pct >= 70 ? `🎉 ${practice.pct}% — beautiful reading! +5 pts` : `${practice.pct}% heard — +5 pts for practicing. Green = heard, rosy = try those again.`}
-                    </span>
-                    <button style={ghostBtn} onClick={listenPractice}>Try again ↻</button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {wordCard && (
-            <div style={{ borderTop: `1.5px solid ${T.blue}`, background: "#F5F8FC", padding: "10px 16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ minWidth: 0 }}>
-                  <strong style={{ fontSize: 17 }}>{wordCard.word}</strong>
-                  {wordCard.phonetic && <span style={{ marginLeft: 8, color: T.inkSoft, fontSize: 13 }}>{wordCard.phonetic}</span>}
-                  {wordCard.pos && <em style={{ marginLeft: 8, color: T.blue, fontSize: 13 }}>{wordCard.pos}</em>}
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button style={{ ...ghostBtn, padding: "5px 12px", fontSize: 13 }} onClick={() => speakWord(wordCard.word)}>🔊 Hear it</button>
-                  <button aria-label="Close" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 16 }} onClick={() => setWordCard(null)}>✕</button>
-                </div>
-              </div>
-              <div style={{ fontSize: 14, marginTop: 4 }}>
-                {wordCard.loading ? "Looking it up…" : wordCard.notFound
-                  ? "Couldn't find a definition for that one — but you can still hear it out loud."
-                  : <>{wordCard.definition}{wordCard.ai && <span style={{ marginLeft: 6, fontSize: 11, color: T.blue }}>✨</span>}</>}
-              </div>
-            </div>
-          )}
-
-          {!reader.loading && (
-            <div style={{
-              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
-              padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", borderTop: `1.5px solid ${T.rule}`, background: T.card,
-            }}>
-              <button style={{ ...ghostBtn, opacity: reader.page === 0 ? 0.4 : 1 }} disabled={reader.page === 0} onClick={() => turnPage(-1)}>← Back</button>
-              <span style={{ fontSize: 12, color: T.inkSoft }}>
-                Page {reader.page + 1} of {reader.pages.length} · {Math.round(((reader.page + 1) / reader.pages.length) * 100)}%
-              </span>
-              <button style={{ ...btn(T.green), opacity: reader.page >= reader.pages.length - 1 ? 0.4 : 1 }} disabled={reader.page >= reader.pages.length - 1} onClick={() => turnPage(1)}>Next →</button>
-            </div>
-          )}
         </div>
       )}
 
