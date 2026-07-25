@@ -417,9 +417,9 @@ async function loadShelf() {
   try {
     const r = await storage.get("shelf-data-v1");
     const d = r ? JSON.parse(r.value) : {};
-    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "system", newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
+    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "system", newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, readLog: d.readLog || [], fluency: d.fluency || [], lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
   } catch {
-    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "system", newsDigest: null, quizNudgeDismissed: false, lastSpotlight: "", onboarded: false, userName: "", role: "" };
+    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "system", newsDigest: null, quizNudgeDismissed: false, readLog: [], fluency: [], lastSpotlight: "", onboarded: false, userName: "", role: "" };
   }
 }
 async function saveShelf(data) {
@@ -605,6 +605,8 @@ export default function ShelfLife() {
   const [newsDigest, setNewsDigest] = useState(null); // {month: "2026-07", data}
   const [newsLoading, setNewsLoading] = useState(false);
   const [quizNudgeDismissed, setQuizNudgeDismissed] = useState(false);
+  const [readLog, setReadLog] = useState([]); // [{d, min, ch, qz}] — the log nobody has to fill out
+  const [fluency, setFluency] = useState([]); // [{d, wcpm, acc, words}] — oral reading fluency over time
   const [lastSpotlight, setLastSpotlight] = useState("");
   const [spotlight, setSpotlight] = useState(null); // {kind, ...payload}
   const [newsMore, setNewsMore] = useState({}); // idx -> {loading, text, open}
@@ -647,6 +649,11 @@ export default function ShelfLife() {
   const [chapQuiz, setChapQuiz] = useState(null); // {chapter, loading, questions, answers, submitted, score, earned}
   const [rewardForm, setRewardForm] = useState({ prize: "", metric: "chapters", need: "", code: "" });
   const [noticeDraft, setNoticeDraft] = useState("");
+  const [assignForm, setAssignForm] = useState({ chapter: "", due: "", note: "" });
+  const [showAssignForm, setShowAssignForm] = useState(false);
+  const [report, setReport] = useState(null); // "class" | "me"
+  const [notes, setNotes] = useState({}); // studentName -> note text (teacher's private notes)
+  const [noteDraft, setNoteDraft] = useState({});
   const [quizBank, setQuizBank] = useState({}); // chapter -> {loading, questions}
   const [chaptersDraft, setChaptersDraft] = useState("");
   const [showRewardForm, setShowRewardForm] = useState(false);
@@ -666,6 +673,8 @@ export default function ShelfLife() {
       setVoicePref(d.voicePref2 || "system");
       setNewsDigest(d.newsDigest || null);
       setQuizNudgeDismissed(d.quizNudgeDismissed || false);
+      setReadLog(d.readLog || []);
+      setFluency(d.fluency || []);
       setLastSpotlight(d.lastSpotlight || "");
       setOnboarded(d.onboarded || false);
       setUserName(d.userName || "");
@@ -812,9 +821,10 @@ export default function ShelfLife() {
       const cp = Math.round((chapter / classroom.chapters) * x.pages);
       return { ...x, currentPage: cp, status: x.status === "done" ? "done" : "reading" };
     });
-    persist({ classroom: next, books: nextBooks, points: points + earned, readDays: delta > 0 ? withToday(readDays) : readDays });
+    persist({ classroom: next, books: nextBooks, points: points + earned, readDays: delta > 0 ? withToday(readDays) : readDays, readLog: delta > 0 ? logActivity({ ch: delta }) : latestRef.current.readLog });
     try {
-      await publishClassProgress(classroom.code, { name: classroom.name, chapter, quizzes: classroom.quizzes || {}, updatedAt: Date.now() });
+      const wk = (latestRef.current.readLog || []).slice(-7).reduce((a, x) => a + (x.min || 0), 0);
+      await publishClassProgress(classroom.code, { name: classroom.name, chapter, quizzes: classroom.quizzes || {}, minWeek: wk, wcpm: (latestRef.current.fluency || []).slice(-1)[0]?.wcpm || 0, updatedAt: Date.now() });
     } catch { /* will sync next update */ }
     if (finishedNow) {
       celebrate();
@@ -869,6 +879,56 @@ export default function ShelfLife() {
     }
   };
 
+  // ----- Conference notes: the thing research says actually works -----
+  useEffect(() => {
+    if (!teaching?.code) return;
+    (async () => {
+      try {
+        const r = await storage.get(`notes:${teaching.code}`, false);
+        setNotes(JSON.parse(r.value) || {});
+      } catch { /* none yet */ }
+    })();
+  }, [teaching?.code]);
+
+  const saveNote = async (name) => {
+    const text = (noteDraft[name] || "").trim().slice(0, 400);
+    const next = { ...notes, [name]: text };
+    if (!text) delete next[name];
+    setNotes(next);
+    setNoteDraft((d) => ({ ...d, [name]: undefined }));
+    try { await storage.set(`notes:${teaching.code}`, JSON.stringify(next), false); flash("Note saved 📝"); }
+    catch { flash("Couldn't save the note"); }
+  };
+
+  // ----- Assignments: "read ch. 3 by Friday" -----
+  const saveAssignment = async () => {
+    const ch = parseInt(assignForm.chapter);
+    if (!teaching || !ch || !assignForm.due) return;
+    const a = { id: uid(), chapter: Math.max(1, Math.min(99, ch)), due: assignForm.due, note: assignForm.note.trim().slice(0, 120) };
+    const updated = { ...teaching, assignments: [...(teaching.assignments || []), a].sort((x, y) => x.due.localeCompare(y.due)) };
+    try {
+      await createClassRecord(updated);
+      persist({ teaching: updated });
+      setAssignForm({ chapter: "", due: "", note: "" });
+      setShowAssignForm(false);
+      flash("Assignment posted — your readers see it now 📋");
+    } catch { flash("Couldn't save — try again"); }
+  };
+  const deleteAssignment = async (id) => {
+    if (!teaching) return;
+    const updated = { ...teaching, assignments: (teaching.assignments || []).filter((a) => a.id !== id) };
+    try { await createClassRecord(updated); persist({ teaching: updated }); } catch { flash("Couldn't remove it"); }
+  };
+  const dueLabel = (due) => {
+    const d = new Date(due + "T12:00:00");
+    const today = new Date(); today.setHours(12, 0, 0, 0);
+    const days = Math.round((d - today) / 86400000);
+    if (days < 0) return { text: `${Math.abs(days)} day${Math.abs(days) !== 1 ? "s" : ""} ago`, late: true };
+    if (days === 0) return { text: "today", soon: true };
+    if (days === 1) return { text: "tomorrow", soon: true };
+    return { text: d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }) };
+  };
+
   // ----- Teacher tools: class message, chapter-count edit, quiz bank -----
   const saveNotice = async () => {
     if (!teaching) return;
@@ -891,13 +951,13 @@ export default function ShelfLife() {
     } catch { flash("Couldn't save — try again"); }
   };
   const viewClassQuiz = async (n) => {
-    if (quizBank[n]?.questions) { setQuizBank((qb) => ({ ...qb, [n]: { ...qb[n], open: !qb[n].open } })); return; }
-    setQuizBank((qb) => ({ ...qb, [n]: { loading: true, open: true } }));
+    if (quizBank[n]?.questions) { setQuizBank((qb) => ({ ...qb, [n]: { ...qb[n], isOpen: !qb[n].isOpen } })); return; }
+    setQuizBank((qb) => ({ ...qb, [n]: { loading: true, isOpen: true } }));
     try {
-      const questions = await getClassQuiz(teaching.code, teaching.book, n);
-      setQuizBank((qb) => ({ ...qb, [n]: { questions, open: true, loading: false } }));
+      const pack = await getClassQuiz(teaching.code, teaching.book, n);
+      setQuizBank((qb) => ({ ...qb, [n]: { questions: pack.mc, open: pack.open, isOpen: true, loading: false } }));
     } catch {
-      setQuizBank((qb) => ({ ...qb, [n]: { loading: false, open: false } }));
+      setQuizBank((qb) => ({ ...qb, [n]: { loading: false, isOpen: false } }));
       flash("Couldn't load that quiz — try again");
     }
   };
@@ -940,7 +1000,7 @@ export default function ShelfLife() {
     if (tab !== "classroom" || !classroom?.code) return;
     fetchClassRecord(classroom.code).then((cls) => {
       if (!cls) return;
-      setClassroom((prev) => (prev ? { ...prev, book: cls.book, bookAuthor: cls.bookAuthor, chapters: cls.chapters, rewards: cls.rewards || [], teacher: cls.teacher, className: cls.className, notice: cls.notice || "" } : prev));
+      setClassroom((prev) => (prev ? { ...prev, book: cls.book, bookAuthor: cls.bookAuthor, chapters: cls.chapters, rewards: cls.rewards || [], teacher: cls.teacher, className: cls.className, notice: cls.notice || "", assignments: cls.assignments || [] } : prev));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -951,7 +1011,8 @@ export default function ShelfLife() {
     try {
       const r = await storage.get(`cq:${code}:${n}`, true);
       const cached = JSON.parse(r.value);
-      if (Array.isArray(cached) && cached.length) return cached;
+      if (Array.isArray(cached) && cached.length) return { mc: cached, open: "" };
+      if (cached?.mc?.length) return cached;
     } catch { /* not generated yet */ }
     const response = await fetch("/api/claude", {
       method: "POST",
@@ -961,26 +1022,34 @@ export default function ShelfLife() {
         max_tokens: 700,
         messages: [{
           role: "user",
-          content: `Create a 3-question multiple-choice quiz about chapter ${n} of the book "${book}" for a young reader who just finished that chapter. Friendly tone, not a test. If you are not confident about that exact chapter's contents, ask questions about the story up to that point that anyone who has read through chapter ${n} could answer. Each question has exactly 4 options and one correct answer. Respond with ONLY a JSON array, no markdown: [{"q":"...","options":["...","...","...","..."],"answer":0}]`,
+          content: `Create a short reading check for chapter ${n} of the book "${book}" for a young reader who just finished that chapter. Friendly tone, not a test. If you are not confident about that exact chapter's contents, ask about the story up to that point that anyone who has read through chapter ${n} could answer.
+
+Include exactly 3 multiple-choice questions (4 options each, one correct) AND exactly 1 open-ended thinking question that asks the reader to infer, predict, connect, or give an opinion with a reason (for example "Why do you think..." or "What would you have done...?"). There is no wrong answer to the thinking question.
+
+Respond with ONLY a JSON object, no markdown:
+{"mc":[{"q":"...","options":["...","...","...","..."],"answer":0}],"open":"..."}`,
         }],
       }),
     });
     const data = await response.json();
     const text = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("\n");
     const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-    const valid = Array.isArray(parsed) && parsed.length >= 2 && parsed.every((q) => q.q && q.options?.length === 4);
+    // Accept both the new {mc, open} shape and the older plain array
+    const mc = Array.isArray(parsed) ? parsed : parsed.mc;
+    const openQ = Array.isArray(parsed) ? "" : (parsed.open || "");
+    const valid = Array.isArray(mc) && mc.length >= 2 && mc.every((q) => q.q && q.options?.length === 4);
     if (!valid) throw new Error("bad quiz");
-    const questions = parsed.slice(0, 3);
-    try { await storage.set(`cq:${code}:${n}`, JSON.stringify(questions), true); } catch { /* still usable */ }
-    return questions;
+    const payload = { mc: mc.slice(0, 3), open: openQ };
+    try { await storage.set(`cq:${code}:${n}`, JSON.stringify(payload), true); } catch { /* still usable */ }
+    return payload;
   };
 
   const startChapterQuiz = async (n) => {
     if (!classroom) return;
     setChapQuiz({ chapter: n, loading: true, questions: null, answers: [], submitted: false });
     try {
-      const questions = await getClassQuiz(classroom.code, classroom.book, n);
-      setChapQuiz((prev) => prev && { ...prev, loading: false, questions });
+      const pack = await getClassQuiz(classroom.code, classroom.book, n);
+      setChapQuiz((prev) => prev && { ...prev, loading: false, questions: pack.mc, openQ: pack.open, openAns: "" });
     } catch {
       flash("Couldn't load the chapter quiz — try again in a moment 🧠");
       setChapQuiz(null);
@@ -994,12 +1063,13 @@ export default function ShelfLife() {
     const prev = (classroom.quizzes || {})[chapQuiz.chapter];
     const earned = prev ? 0 : score * 5;
     const passed = score >= total - 1 || prev?.passed || false;
-    const quizzes = { ...(classroom.quizzes || {}), [chapQuiz.chapter]: { score: Math.max(score, prev?.score || 0), total, passed, at: Date.now() } };
-    persist({ classroom: { ...classroom, quizzes }, points: points + earned });
+    const quizzes = { ...(classroom.quizzes || {}), [chapQuiz.chapter]: { score: Math.max(score, prev?.score || 0), total, passed, at: Date.now(), think: (chapQuiz.openAns || "").trim().slice(0, 400) || prev?.think || "" } };
+    persist({ classroom: { ...classroom, quizzes }, points: points + earned, readLog: logActivity({ qz: 1 }) });
     setChapQuiz((c) => c && { ...c, submitted: true, score, earned });
     if (score >= total - 1) celebrate();
     try {
-      await publishClassProgress(classroom.code, { name: classroom.name, chapter: classroom.chapter, quizzes, updatedAt: Date.now() });
+      const wk2 = (latestRef.current.readLog || []).slice(-7).reduce((a, x) => a + (x.min || 0), 0);
+      await publishClassProgress(classroom.code, { name: classroom.name, chapter: classroom.chapter, quizzes, minWeek: wk2, wcpm: (latestRef.current.fluency || []).slice(-1)[0]?.wcpm || 0, updatedAt: Date.now() });
     } catch { /* syncs next time */ }
   };
 
@@ -1012,7 +1082,7 @@ export default function ShelfLife() {
   // Live snapshot of ALL persisted state, refreshed every render — persist()
   // reads from here so a save can never overwrite fields with stale values.
   const latestRef = useRef({});
-  latestRef.current = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, myWords, voicePref, newsDigest, quizNudgeDismissed, lastSpotlight, onboarded, userName, role };
+  latestRef.current = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, myWords, voicePref, newsDigest, quizNudgeDismissed, readLog, fluency, lastSpotlight, onboarded, userName, role };
 
   const persist = (patch) => {
     const next = { ...latestRef.current, ...patch };
@@ -1032,6 +1102,8 @@ export default function ShelfLife() {
     setVoicePref(next.voicePref2 || next.voicePref || "system");
     setNewsDigest(next.newsDigest !== undefined ? next.newsDigest : null);
     setQuizNudgeDismissed(next.quizNudgeDismissed || false);
+    setReadLog(next.readLog || []);
+    setFluency(next.fluency || []);
     setLastSpotlight(next.lastSpotlight || "");
     setOnboarded(next.onboarded);
     setUserName(next.userName);
@@ -1453,7 +1525,7 @@ export default function ShelfLife() {
     if (!reader?.pages?.length) return;
     stopReadAlong();
     // Take the first ~30 words of the current page as the passage
-    const words = reader.pages[reader.page].split(/\s+/).filter((w) => /\S/.test(w)).slice(0, 30);
+    const words = reader.pages[reader.page].split(/\s+/).filter((w) => /\S/.test(w)).slice(0, 60);
     setPractice({ passage: words.join(" "), words, listening: false, matched: null, done: false });
   };
   const listenPractice = () => {
@@ -1470,17 +1542,23 @@ export default function ShelfLife() {
       rec.onresult = (e) => { for (let i = e.resultIndex; i < e.results.length; i++) heard += " " + e.results[i][0].transcript; };
       rec.onerror = () => { setPractice((pr) => pr && { ...pr, listening: false }); flash("Mic hiccup — check mic permission and try again"); };
       rec.onend = () => {
+        const secs = Math.max(5, Math.round((Date.now() - (window.__slProbeStart || Date.now())) / 1000));
         setPractice((pr) => {
           if (!pr) return pr;
           const heardSet = new Set(heard.split(/\s+/).map(normW).filter(Boolean));
           const matched = pr.words.map((w) => heardSet.has(normW(w)));
           const hits = matched.filter(Boolean).length;
           const pctHit = Math.round((hits / pr.words.length) * 100);
-          persist({ points: points + 5, readDays: withToday(readDays) });
+          // Words Correct Per Minute — the standard oral reading fluency measure
+          const wcpm = Math.round((hits / secs) * 60);
+          const today = new Date().toISOString().slice(0, 10);
+          const hist = [...(latestRef.current.fluency || []).filter((f) => f.d !== today), { d: today, wcpm, acc: pctHit, words: pr.words.length }].slice(-60);
+          persist({ points: points + 5, readDays: withToday(readDays), fluency: hist });
           if (pctHit >= 70) celebrate();
-          return { ...pr, listening: false, matched, pct: pctHit, done: true };
+          return { ...pr, listening: false, matched, pct: pctHit, wcpm, secs, done: true };
         });
       };
+      window.__slProbeStart = Date.now();
       setPractice((pr) => pr && { ...pr, listening: true, matched: null, done: false });
       rec.start();
       // auto-stop after 30 seconds
@@ -1576,6 +1654,7 @@ export default function ShelfLife() {
   };
 
   const openReader = async (item) => {
+    window.__slReadStart = Date.now();
     setReader({ gid: item.gid, title: item.title, author: item.author, loading: true, pages: [], page: item.pos || 0 });
     try {
       const r = await fetch(`/api/book?id=${item.gid}`);
@@ -1602,6 +1681,14 @@ export default function ShelfLife() {
     }
   };
 
+  const bankMinutes = () => {
+    const started = window.__slReadStart;
+    if (!started) return 0;
+    const mins = Math.min(30, Math.round((Date.now() - started) / 60000)); // cap a forgotten-open tab
+    window.__slReadStart = Date.now();
+    return mins;
+  };
+
   const turnPage = (delta) => {
     if (!reader?.pages?.length) return;
     stopReadAlong();
@@ -1619,13 +1706,25 @@ export default function ShelfLife() {
       }
       return { ...x, pages: total, currentPage: atEnd ? total : page, status: x.status === "done" ? "done" : "reading" };
     });
+    const mins = bankMinutes();
     persist({
       digitalShelf: digitalShelf.map((x) => (x.gid === reader.gid ? { ...x, pos: page } : x)),
       readDays: delta > 0 ? withToday(readDays) : readDays,
       books: nextBooks,
       points: points + earned,
+      readLog: mins ? logActivity({ min: mins }) : latestRef.current.readLog,
     });
     if (earned) { celebrate(); flash("You finished the whole book! +25 pts 🎉"); }
+  };
+
+  // ----- The log nobody has to fill out: built from what actually happened -----
+  const logActivity = (patch) => {
+    const d = new Date().toISOString().slice(0, 10);
+    const cur = latestRef.current.readLog || [];
+    const row = cur.find((x) => x.d === d) || { d, min: 0, ch: 0, qz: 0 };
+    const next = { ...row, min: row.min + (patch.min || 0), ch: row.ch + (patch.ch || 0), qz: row.qz + (patch.qz || 0) };
+    const rest = cur.filter((x) => x.d !== d);
+    return [...rest, next].sort((a, b) => a.d.localeCompare(b.d)).slice(-180); // ~6 months
   };
 
   // ----- Daily spotlight: a little delight when you open the app -----
@@ -2128,7 +2227,7 @@ export default function ShelfLife() {
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v30</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v31</span>
         </p>
       </header>
 
@@ -2523,6 +2622,35 @@ export default function ShelfLife() {
               </Ruled>
             )}
 
+            {/* Reading pace over time */}
+            {fluency.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: 0, borderBottom: `2px solid ${T.rule}`, paddingBottom: 6 }}>
+                  🎙 My reading pace
+                </h2>
+                <p style={{ fontSize: 12, color: T.inkSoft, margin: "6px 0 8px" }}>
+                  From reading out loud in the app. Going up over weeks is the whole point — not any single number.
+                </p>
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 70, padding: "0 2px" }}>
+                  {fluency.slice(-14).map((f) => {
+                    const max = Math.max(...fluency.slice(-14).map((x) => x.wcpm), 40);
+                    return (
+                      <div key={f.d} title={`${f.d}: ${f.wcpm} wpm, ${f.acc}% accuracy`} style={{ flex: 1, textAlign: "center" }}>
+                        <div style={{
+                          height: Math.max(4, Math.round((f.wcpm / max) * 58)), background: T.blue,
+                          borderRadius: "3px 3px 0 0", opacity: 0.85,
+                        }} />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: T.inkSoft, marginTop: 4 }}>
+                  <span>{fluency.length > 1 ? `${fluency[Math.max(0, fluency.length - 14)].wcpm} wpm` : ""}</span>
+                  <span style={{ fontWeight: 700, color: T.ink }}>latest: {fluency[fluency.length - 1].wcpm} words per minute</span>
+                </div>
+              </div>
+            )}
+
             {/* My words — the vocabulary shelf */}
             {myWords.length > 0 && (
               <div style={{ marginTop: 20 }}>
@@ -2531,6 +2659,9 @@ export default function ShelfLife() {
                     📖 My words <span style={{ fontSize: 13, color: T.inkSoft, fontWeight: 400 }}>{myWords.length} collected</span>
                   </h2>
                   <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12 }} onClick={() => setReport("me")}>
+                      📄 My reading log
+                    </button>
                     <button style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12 }} onClick={() => setShowWords(!showWords)}>
                       {showWords ? "Hide" : "See my words"}
                     </button>
@@ -3626,8 +3757,41 @@ export default function ShelfLife() {
                           background: finished ? T.green : T.blue, transition: "width .3s",
                         }} />
                       </div>
+                      {(() => {
+                        const nm = s.name;
+                        const editing = noteDraft[nm] !== undefined;
+                        return (
+                          <div style={{ marginTop: 7 }}>
+                            {notes[nm] && !editing && (
+                              <div style={{ fontSize: 12.5, background: "#FDF6EE", borderLeft: `3px solid ${T.stamp}`, padding: "4px 9px", borderRadius: 4 }}>
+                                📝 {notes[nm]}
+                              </div>
+                            )}
+                            {editing ? (
+                              <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                                <input style={{ ...input, flex: "1 1 200px", fontSize: 13, padding: "6px 10px" }} maxLength={400}
+                                  placeholder="Conference note — what to check in about"
+                                  value={noteDraft[nm]} onChange={(e) => setNoteDraft((d) => ({ ...d, [nm]: e.target.value }))} />
+                                <button style={{ ...btn(), padding: "5px 12px", fontSize: 12 }} onClick={() => saveNote(nm)}>Save</button>
+                                <button style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }} onClick={() => setNoteDraft((d) => ({ ...d, [nm]: undefined }))}>Cancel</button>
+                              </div>
+                            ) : (
+                              <button style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 11.5, padding: "3px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                                onClick={() => setNoteDraft((d) => ({ ...d, [nm]: notes[nm] || "" }))}>
+                                {notes[nm] ? "edit note" : "+ add a conference note"}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       {s.quizzes && Object.keys(s.quizzes).length > 0 && (
                         <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 7 }}>
+                          {Object.entries(s.quizzes).filter(([, q]) => q.think).map(([n, q]) => (
+                            <div key={`t${n}`} style={{ width: "100%", fontSize: 12.5, background: "#F5F8FC", borderLeft: `3px solid ${T.blue}`, padding: "5px 9px", borderRadius: 4, marginBottom: 4 }}>
+                              💭 <strong>Ch{n}:</strong> {q.think}
+                            </div>
+                          ))}
                           {Object.entries(s.quizzes).sort((a, b) => Number(a[0]) - Number(b[0])).map(([n, q]) => (
                             <span key={n} style={{
                               fontSize: 11, fontWeight: 700, borderRadius: 999, padding: "2px 9px",
@@ -3649,6 +3813,63 @@ export default function ShelfLife() {
                   <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: "0 0 8px" }}>
                     {teaching.kind === "family" ? "Family tools 🧰" : "Teacher tools 🧰"}
                   </h2>
+
+                  <button style={{ ...btn(), marginBottom: 12 }} onClick={() => setReport("class")}>
+                    📄 Class progress report (print / PDF)
+                  </button>
+
+                  {/* Assignments */}
+                  <Ruled style={{ marginBottom: 12 }}>
+                    <div style={{ fontWeight: 700, lineHeight: "28px" }}>📋 Reading assignments</div>
+                    <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: "28px" }}>
+                      "Read chapter 3 by Friday." Readers see what's due; you see who's there — no paper logs.
+                    </div>
+                    {(teaching.assignments || []).map((a) => {
+                      const done = (roster || []).filter((r) => (r.chapter || 0) >= a.chapter).length;
+                      const total = (roster || []).length;
+                      const d = dueLabel(a.due);
+                      return (
+                        <div key={a.id} style={{
+                          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+                          flexWrap: "wrap", padding: "8px 0", borderTop: `1px solid ${T.rule}`,
+                        }}>
+                          <div>
+                            <strong>Chapter {a.chapter}</strong>
+                            <span style={{ fontSize: 12.5, color: d.late ? T.stamp : T.inkSoft, marginLeft: 8 }}>
+                              due {d.text}
+                            </span>
+                            {a.note && <div style={{ fontSize: 12.5, color: T.inkSoft }}>{a.note}</div>}
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 700, color: total && done === total ? T.green : T.ink }}>
+                              {done}/{total} there
+                            </span>
+                            <button aria-label="Remove assignment" style={{ background: "none", border: "none", color: T.stamp, cursor: "pointer", fontSize: 15 }}
+                              onClick={() => deleteAssignment(a.id)}>✕</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {!showAssignForm ? (
+                      <button style={{ ...btn(T.green), marginTop: 8 }} onClick={() => setShowAssignForm(true)}>+ Add an assignment</button>
+                    ) : (
+                      <div style={{ paddingTop: 8 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginBottom: 8 }}>
+                          <input style={input} inputMode="numeric" placeholder="Chapter *" value={assignForm.chapter}
+                            onChange={(e) => setAssignForm({ ...assignForm, chapter: e.target.value.replace(/\D/g, "") })} />
+                          <input style={input} type="date" value={assignForm.due}
+                            onChange={(e) => setAssignForm({ ...assignForm, due: e.target.value })} />
+                          <input style={input} maxLength={120} placeholder="Note (optional)" value={assignForm.note}
+                            onChange={(e) => setAssignForm({ ...assignForm, note: e.target.value })} />
+                        </div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button style={{ ...btn(T.green), opacity: assignForm.chapter && assignForm.due ? 1 : 0.5 }}
+                            disabled={!assignForm.chapter || !assignForm.due} onClick={saveAssignment}>Post assignment</button>
+                          <button style={ghostBtn} onClick={() => setShowAssignForm(false)}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </Ruled>
 
                   {/* Message to the class */}
                   <Ruled style={{ marginBottom: 12 }}>
@@ -3687,17 +3908,22 @@ export default function ShelfLife() {
                       {Array.from({ length: teaching.chapters }, (_, i) => i + 1).map((n) => (
                         <button key={n} onClick={() => viewClassQuiz(n)} style={{
                           padding: "5px 12px", borderRadius: 999, fontSize: 12.5, cursor: "pointer", fontWeight: 700,
-                          border: `1.5px solid ${quizBank[n]?.open ? T.blue : T.rule}`,
-                          background: quizBank[n]?.open ? "#DDE8F6" : "transparent", color: T.ink,
+                          border: `1.5px solid ${quizBank[n]?.isOpen ? T.blue : T.rule}`,
+                          background: quizBank[n]?.isOpen ? "#DDE8F6" : "transparent", color: T.ink,
                           fontFamily: "'Atkinson Hyperlegible', sans-serif",
                         }}>
                           Ch {n}
                         </button>
                       ))}
                     </div>
-                    {Object.entries(quizBank).filter(([, v]) => v.open).map(([n, v]) => (
+                    {Object.entries(quizBank).filter(([, v]) => v.isOpen).map(([n, v]) => (
                       <div key={n} style={{ background: "#F5F8FC", border: `1px solid ${T.rule}`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, fontSize: 13 }}>
                         <strong>Chapter {n} quiz</strong>
+                        {!v.loading && v.open && (
+                          <div style={{ margin: "8px 0", padding: "6px 9px", background: "#FDF6EE", borderLeft: `3px solid ${T.stamp}`, borderRadius: 4 }}>
+                            💭 <strong>Thinking question:</strong> {v.open}
+                          </div>
+                        )}
                         {v.loading ? <div style={{ color: T.inkSoft }}>Writing the questions…</div> :
                           (v.questions || []).map((q, qi) => (
                             <div key={qi} style={{ margin: "8px 0" }}>
@@ -3820,6 +4046,36 @@ export default function ShelfLife() {
                     Your teacher can see your chapter and quiz scores — that's how they know when to help, not to rank you.
                   </div>
 
+                  {(classroom.assignments || []).length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.blue, fontWeight: 700 }}>📋 WHAT'S DUE</div>
+                      {classroom.assignments.map((a) => {
+                        const d = dueLabel(a.due);
+                        const done = (classroom.chapter || 0) >= a.chapter;
+                        return (
+                          <div key={a.id} style={{
+                            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap",
+                            background: done ? "#F0F5F0" : T.paper, border: `1.5px solid ${done ? T.green : d.late ? T.stamp : T.rule}`,
+                            borderRadius: 10, padding: "8px 13px", marginTop: 6,
+                          }}>
+                            <div>
+                              <strong style={{ fontSize: 14.5 }}>{done ? "✓ " : ""}Chapter {a.chapter}</strong>
+                              <span style={{ fontSize: 12.5, color: done ? T.green : d.late ? T.stamp : T.inkSoft, marginLeft: 8 }}>
+                                {done ? "you're there!" : `due ${d.text}`}
+                              </span>
+                              {a.note && !done && <div style={{ fontSize: 12.5, color: T.inkSoft }}>{a.note}</div>}
+                            </div>
+                            {!done && (classroom.chapter || 0) < a.chapter && (
+                              <span style={{ fontSize: 12, color: T.inkSoft }}>
+                                {a.chapter - (classroom.chapter || 0)} chapter{a.chapter - (classroom.chapter || 0) !== 1 ? "s" : ""} to go
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   {classroom.notice && (
                     <div style={{
                       margin: "10px 0 0", background: "#FDF6EE", border: `2px dashed ${T.stamp}`,
@@ -3879,6 +4135,19 @@ export default function ShelfLife() {
                                   </div>
                                 </div>
                               ))}
+                              {chapQuiz.openQ && (
+                                <div style={{ margin: "14px 0", padding: "12px 14px", background: "#FDF6EE", border: `2px dashed ${T.stamp}`, borderRadius: 10 }}>
+                                  <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.stamp, fontWeight: 700 }}>💭 THINK ABOUT IT — no wrong answers</div>
+                                  <div style={{ fontWeight: 700, fontSize: 14.5, margin: "4px 0 8px" }}>{chapQuiz.openQ}</div>
+                                  <textarea
+                                    style={{ width: "100%", boxSizing: "border-box", minHeight: 72, padding: "9px 12px", border: `1.5px solid ${T.rule}`, borderRadius: 8, background: T.card, color: T.ink, fontSize: 14, fontFamily: "'Atkinson Hyperlegible', sans-serif", outline: "none", resize: "vertical" }}
+                                    placeholder="Write what you think — a sentence or two is plenty."
+                                    maxLength={400}
+                                    value={chapQuiz.openAns || ""}
+                                    onChange={(e) => setChapQuiz({ ...chapQuiz, openAns: e.target.value })}
+                                  />
+                                </div>
+                              )}
                               <div style={{ display: "flex", gap: 8 }}>
                                 <button
                                   style={{ ...btn(), opacity: chapQuiz.answers.filter((a) => a !== undefined).length === chapQuiz.questions.length ? 1 : 0.5 }}
@@ -4181,6 +4450,7 @@ export default function ShelfLife() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
               {[
                 ["personality", "🎭", "Personality", "Discover your reading type and get matched books"],
+                ["privacy", "🔒", "Privacy & schools", "What we collect, what we never do — for teachers, families & districts"],
                 ["news", "📰", "The Reading Room", "This month in the reading world — anniversaries, celebrations & a challenge"],
                 ["foryou", "📖", "For you", "What to read next, based on books you finished"],
                 ...(SCHOOL_MODE ? [] : [["club", "💬", "Book club", "The community wall and real-world meetups"]]),
@@ -4290,6 +4560,50 @@ export default function ShelfLife() {
             </div>
           </div>
 
+        )}
+
+        {/* ---------------- PRIVACY & SCHOOLS ---------------- */}
+        {tab === "privacy" && (
+          <div style={{ animation: "rise .3s ease" }}>
+            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 22, margin: "0 0 2px" }}>
+              🔒 Privacy & schools
+            </h2>
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: T.inkSoft }}>
+              Written for teachers, families, and district technology offices.
+            </p>
+
+            {[
+              ["What we collect from a reader", "A first name (or nickname) if they join a class, the books on their shelf, chapters and quizzes completed, words they tapped, and reading activity in the app. That's the whole list."],
+              ["What we never collect", "No last names. No email addresses or phone numbers from students. No home address. No date of birth. No photos, no camera access. No location tracking. Voice practice is processed by the browser on the device and is never recorded, stored, or uploaded."],
+              ["Advertising & selling data", "There is no advertising in Shelf Life, and reader data is never sold, rented, or shared with advertisers or data brokers. Ever."],
+              ["Who can see a student's data", "Their teacher (chapters, quiz scores, and reading activity for the class book) and nobody else. Students are always listed alphabetically and never ranked against each other. No student can see another student's scores."],
+              ["Where the data lives", "Personal reading data stays on the reader's own device. Classroom data (a class code, first names, chapter numbers, quiz scores) is stored in the app's database so the teacher's dashboard works across devices."],
+              ["Deleting data", "A student can leave a class at any time from the Classroom tab, and a teacher can close a class, which removes it. Anything on the device is cleared by clearing the browser's data for this site. Requests for deletion can be sent to the operator of this app."],
+              ["Under-13 readers (COPPA)", "Shelf Life is designed to be usable without any personally identifying information from a child. When a school adopts it for classroom use, the school provides consent on the family's behalf for educational use, as COPPA permits. Families may ask their teacher to remove a child from a class at any time."],
+              ["Student records (FERPA)", "Any classroom data created in Shelf Life is held on behalf of the school as a school official with a legitimate educational interest, is used only to provide the service to that classroom, and is never used for any other purpose."],
+              ["AI features", "Quizzes, summaries, word definitions, and recaps are generated by an AI model. Only the book title, chapter number, and the tapped word are sent — never a student's name, scores, or personal information. Student work is not used to train AI models."],
+              ["Accessibility", "Every page uses a high-legibility typeface, adjustable text size in the reader, tap-to-hear pronunciation for any word, full-page read-aloud, and Spanish throughout. Feedback on accessibility gaps is genuinely welcome."],
+            ].map(([h, body]) => (
+              <div key={h} style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 10, padding: "12px 16px", marginBottom: 8 }}>
+                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16 }}>{h}</div>
+                <div style={{ fontSize: 13.5, color: T.ink, marginTop: 3 }}>{body}</div>
+              </div>
+            ))}
+
+            <div style={{ background: "#F5F8FC", border: `2px solid ${T.blue}`, borderRadius: 12, padding: "14px 16px", marginTop: 12 }}>
+              <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 17 }}>For district technology offices</div>
+              <p style={{ fontSize: 13.5, margin: "4px 0 0" }}>
+                Shelf Life is an independent product built in Houston and is happy to sign a district Data Privacy Agreement,
+                complete a vendor questionnaire, or run a limited pilot under your terms. A school-mode build is available that
+                removes the community wall and public meetups entirely. Ask the person who shared this app with you for a copy
+                of the agreement.
+              </p>
+            </div>
+
+            <p style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 14, textAlign: "center" }}>
+              Last updated {new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })} · questions are welcome
+            </p>
+          </div>
         )}
 
         {/* ---------------- THE READING ROOM (news) ---------------- */}
@@ -4688,7 +5002,7 @@ export default function ShelfLife() {
               <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
               <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
               <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
-              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopReadAlong(); stopListening(); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
+              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopReadAlong(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
             </div>
           </div>
 
@@ -4779,9 +5093,25 @@ export default function ShelfLife() {
                 )}
                 {practice.done && (
                   <>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: practice.pct >= 70 ? T.green : T.ink }}>
-                      {practice.pct >= 70 ? `🎉 ${practice.pct}% — beautiful reading! +5 pts` : `${practice.pct}% heard — +5 pts for practicing. Green = heard, rosy = try those again.`}
-                    </span>
+                    <div style={{ width: "100%" }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: practice.pct >= 70 ? T.green : T.ink }}>
+                        {practice.pct >= 70 ? `🎉 ${practice.pct}% — beautiful reading! +5 pts` : `${practice.pct}% heard — +5 pts for practicing. Green = heard, rosy = try those again.`}
+                      </span>
+                      {practice.wcpm > 0 && (() => {
+                        const prev = (fluency || []).filter((f) => f.d !== new Date().toISOString().slice(0, 10));
+                        const best = prev.length ? Math.max(...prev.map((f) => f.wcpm)) : 0;
+                        return (
+                          <div style={{ fontSize: 13, marginTop: 4, color: T.inkSoft }}>
+                            Reading pace: <strong style={{ color: T.blue }}>{practice.wcpm} words per minute</strong>
+                            {best > 0 && (
+                              practice.wcpm > best
+                                ? <span style={{ color: T.green, fontWeight: 700 }}> — a new personal best! 🌟</span>
+                                : <span> · your best is {best}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
                     <button style={ghostBtn} onClick={listenPractice}>Try again ↻</button>
                   </>
                 )}
@@ -4824,6 +5154,133 @@ export default function ShelfLife() {
           )}
         </div>
       )}
+
+      {report && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 95, background: T.paper, overflowY: "auto", padding: 20 }}>
+          <div className="sl-noprint" style={{ display: "flex", gap: 8, justifyContent: "flex-end", maxWidth: 780, margin: "0 auto 14px" }}>
+            <button style={btn()} onClick={() => window.print()}>🖨 Print / Save as PDF</button>
+            <button style={ghostBtn} onClick={() => setReport(null)}>Close</button>
+          </div>
+
+          <div id="sl-report" style={{
+            maxWidth: 780, margin: "0 auto", background: "#FFF", border: `1px solid ${T.rule}`,
+            borderRadius: 10, padding: "28px 32px", color: "#22334D", fontFamily: "'Atkinson Hyperlegible', sans-serif",
+          }}>
+            {report === "class" && teaching && (() => {
+              const rows = (roster || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+              const avg = rows.length ? (rows.reduce((a, x) => a + (x.chapter || 0), 0) / rows.length).toFixed(1) : "0";
+              const totalQ = rows.reduce((a, x) => a + Object.keys(x.quizzes || {}).length, 0);
+              const passQ = rows.reduce((a, x) => a + Object.values(x.quizzes || {}).filter((q) => q.passed).length, 0);
+              return (
+                <div>
+                  <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 26 }}>{teaching.className}</div>
+                  <div style={{ fontSize: 13.5, color: "#5A6B85" }}>
+                    Reading progress report · {teaching.teacher} · {new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                  </div>
+                  <div style={{ fontSize: 13.5, marginTop: 2 }}>
+                    Book: <strong>{teaching.book}</strong>{teaching.bookAuthor ? ` by ${teaching.bookAuthor}` : ""} · {teaching.chapters} chapters
+                  </div>
+
+                  <div style={{ display: "flex", gap: 22, flexWrap: "wrap", margin: "16px 0", padding: "12px 0", borderTop: "2px solid #E4DECB", borderBottom: "2px solid #E4DECB" }}>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{rows.length}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>READERS</div></div>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{avg}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>AVG CHAPTER</div></div>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{passQ}/{totalQ}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>QUIZZES PASSED</div></div>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{rows.reduce((a, x) => a + (x.minWeek || 0), 0)}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>MINUTES READ (7 DAYS)</div></div>
+                  </div>
+
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1.5px solid #22334D", textAlign: "left" }}>
+                        <th style={{ padding: "6px 4px" }}>Reader</th>
+                        <th style={{ padding: "6px 4px" }}>Chapter</th>
+                        <th style={{ padding: "6px 4px" }}>Quizzes passed</th>
+                        <th style={{ padding: "6px 4px" }}>Min / 7 days</th>
+                        <th style={{ padding: "6px 4px" }}>Read-aloud pace</th>
+                        <th style={{ padding: "6px 4px" }}>Last active</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r) => {
+                        const qs = Object.values(r.quizzes || {});
+                        const last = r.updatedAt ? new Date(r.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
+                        return (
+                          <tr key={r.name} style={{ borderBottom: "1px solid #E4DECB" }}>
+                            <td style={{ padding: "6px 4px", fontWeight: 700 }}>{r.name}</td>
+                            <td style={{ padding: "6px 4px" }}>{r.chapter || 0} of {teaching.chapters}</td>
+                            <td style={{ padding: "6px 4px" }}>{qs.filter((q) => q.passed).length} of {qs.length || 0}</td>
+                            <td style={{ padding: "6px 4px" }}>{r.minWeek || 0}</td>
+                            <td style={{ padding: "6px 4px" }}>{r.wcpm ? `${r.wcpm} wpm` : "—"}</td>
+                            <td style={{ padding: "6px 4px" }}>{last}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <p style={{ fontSize: 11.5, color: "#5A6B85", marginTop: 18, borderTop: "1px solid #E4DECB", paddingTop: 10 }}>
+                    Generated by Shelf Life from what readers actually did in the app — no student filled out a log to produce this.
+                    Readers are listed alphabetically and never ranked.
+                  </p>
+                </div>
+              );
+            })()}
+
+            {report === "me" && (() => {
+              const last30 = readLog.slice(-30);
+              const tot = last30.reduce((a, x) => ({ min: a.min + (x.min || 0), ch: a.ch + (x.ch || 0), qz: a.qz + (x.qz || 0) }), { min: 0, ch: 0, qz: 0 });
+              return (
+                <div>
+                  <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 26 }}>My reading log</div>
+                  <div style={{ fontSize: 13.5, color: "#5A6B85" }}>
+                    {classroom?.name || userName || "Reader"} · {new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                  </div>
+                  <div style={{ display: "flex", gap: 22, flexWrap: "wrap", margin: "16px 0", padding: "12px 0", borderTop: "2px solid #E4DECB", borderBottom: "2px solid #E4DECB" }}>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{tot.min}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>MINUTES</div></div>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{tot.ch}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>CHAPTERS</div></div>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{tot.qz}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>QUIZZES</div></div>
+                    <div><div style={{ fontSize: 24, fontFamily: "'Fraunces', serif", fontWeight: 900 }}>{books.filter((b) => b.status === "done").length}</div><div style={{ fontSize: 11.5, color: "#5A6B85" }}>BOOKS FINISHED</div></div>
+                  </div>
+                  {last30.length === 0 ? (
+                    <p style={{ fontSize: 13.5 }}>Nothing logged yet — read a few pages in the app and this fills itself in.</p>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1.5px solid #22334D", textAlign: "left" }}>
+                          <th style={{ padding: "6px 4px" }}>Date</th>
+                          <th style={{ padding: "6px 4px" }}>Minutes read</th>
+                          <th style={{ padding: "6px 4px" }}>Chapters</th>
+                          <th style={{ padding: "6px 4px" }}>Quizzes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {last30.slice().reverse().map((x) => (
+                          <tr key={x.d} style={{ borderBottom: "1px solid #E4DECB" }}>
+                            <td style={{ padding: "6px 4px" }}>{new Date(x.d + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</td>
+                            <td style={{ padding: "6px 4px" }}>{x.min || 0}</td>
+                            <td style={{ padding: "6px 4px" }}>{x.ch || 0}</td>
+                            <td style={{ padding: "6px 4px" }}>{x.qz || 0}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <p style={{ fontSize: 11.5, color: "#5A6B85", marginTop: 18, borderTop: "1px solid #E4DECB", paddingTop: 10 }}>
+                    This log filled itself in from real reading in the Shelf Life app. No signatures required.
+                  </p>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #sl-report, #sl-report * { visibility: visible !important; }
+          #sl-report { position: absolute; left: 0; top: 0; width: 100%; padding: 0 !important; background: #fff !important; }
+          .sl-noprint { display: none !important; }
+        }
+      `}</style>
 
       <InstallPrompt />
 
