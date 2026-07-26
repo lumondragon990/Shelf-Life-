@@ -2,6 +2,7 @@
   "functions": {
     "api/claude.js": { "maxDuration": 60 },
     "api/book.js": { "maxDuration": 60 },
-    "api/gbooks.js": { "maxDuration": 30 }
+    "api/gbooks.js": { "maxDuration": 30 },
+    "api/kv.js": { "maxDuration": 20 }
   }
 }
