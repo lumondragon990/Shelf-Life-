@@ -417,9 +417,9 @@ async function loadShelf() {
   try {
     const r = await storage.get("shelf-data-v1");
     const d = r ? JSON.parse(r.value) : {};
-    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "system", newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, readLog: d.readLog || [], fluency: d.fluency || [], lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
+    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "system", newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, readLog: d.readLog || [], fluency: d.fluency || [], classes: d.classes || [], family: d.family || null, famSeen: d.famSeen || 0, lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
   } catch {
-    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "system", newsDigest: null, quizNudgeDismissed: false, readLog: [], fluency: [], lastSpotlight: "", onboarded: false, userName: "", role: "" };
+    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "system", newsDigest: null, quizNudgeDismissed: false, readLog: [], fluency: [], classes: [], family: null, famSeen: 0, lastSpotlight: "", onboarded: false, userName: "", role: "" };
   }
 }
 async function saveShelf(data) {
@@ -497,6 +497,25 @@ async function fetchClassRecord(code) {
 }
 async function publishClassProgress(code, student) {
   await storage.set(`cp:${code}:${sanitizeKeyName(student.name)}`, JSON.stringify(student), true);
+}
+async function saveFamilyMessages(classCode, student, msgs) {
+  await storage.set(`fmsg:${classCode}:${sanitizeKeyName(student)}`, JSON.stringify(msgs), true);
+}
+async function fetchFamilyMessages(classCode, student) {
+  try {
+    const r = await storage.get(`fmsg:${classCode}:${sanitizeKeyName(student)}`, true);
+    return JSON.parse(r.value) || [];
+  } catch {
+    return [];
+  }
+}
+async function fetchStudentProgress(classCode, student) {
+  try {
+    const r = await storage.get(`cp:${classCode}:${sanitizeKeyName(student)}`, true);
+    return JSON.parse(r.value);
+  } catch {
+    return null;
+  }
 }
 async function fetchRoster(code) {
   try {
@@ -607,6 +626,13 @@ export default function ShelfLife() {
   const [quizNudgeDismissed, setQuizNudgeDismissed] = useState(false);
   const [readLog, setReadLog] = useState([]); // [{d, min, ch, qz}] — the log nobody has to fill out
   const [fluency, setFluency] = useState([]); // [{d, wcpm, acc, words}] — oral reading fluency over time
+  const [classes, setClasses] = useState([]); // every class this teacher runs
+  const [family, setFamily] = useState(null); // parent view: {code, classCode, student, className, teacher, book, chapters}
+  const [famSeen, setFamSeen] = useState(0); // timestamp of last message read
+  const [famProgress, setFamProgress] = useState(null);
+  const [famMsgs, setFamMsgs] = useState([]);
+  const [famBusy, setFamBusy] = useState(false);
+  const [famCodeInput, setFamCodeInput] = useState("");
   const [lastSpotlight, setLastSpotlight] = useState("");
   const [spotlight, setSpotlight] = useState(null); // {kind, ...payload}
   const [newsMore, setNewsMore] = useState({}); // idx -> {loading, text, open}
@@ -652,6 +678,8 @@ export default function ShelfLife() {
   const [assignForm, setAssignForm] = useState({ chapter: "", due: "", note: "" });
   const [showAssignForm, setShowAssignForm] = useState(false);
   const [report, setReport] = useState(null); // "class" | "me"
+  const [tPane, setTPane] = useState("readers"); // teacher dashboard pane
+  const [tool, setTool] = useState(null); // {kind, loading, data, forName}
   const [notes, setNotes] = useState({}); // studentName -> note text (teacher's private notes)
   const [noteDraft, setNoteDraft] = useState({});
   const [quizBank, setQuizBank] = useState({}); // chapter -> {loading, questions}
@@ -675,6 +703,10 @@ export default function ShelfLife() {
       setQuizNudgeDismissed(d.quizNudgeDismissed || false);
       setReadLog(d.readLog || []);
       setFluency(d.fluency || []);
+      setFamily(d.family || null);
+      setFamSeen(d.famSeen || 0);
+      const existing = d.classes || [];
+      setClasses(existing.length ? existing : (d.teaching ? [d.teaching] : []));
       setLastSpotlight(d.lastSpotlight || "");
       setOnboarded(d.onboarded || false);
       setUserName(d.userName || "");
@@ -824,7 +856,7 @@ export default function ShelfLife() {
     persist({ classroom: next, books: nextBooks, points: points + earned, readDays: delta > 0 ? withToday(readDays) : readDays, readLog: delta > 0 ? logActivity({ ch: delta }) : latestRef.current.readLog });
     try {
       const wk = (latestRef.current.readLog || []).slice(-7).reduce((a, x) => a + (x.min || 0), 0);
-      await publishClassProgress(classroom.code, { name: classroom.name, chapter, quizzes: classroom.quizzes || {}, minWeek: wk, wcpm: (latestRef.current.fluency || []).slice(-1)[0]?.wcpm || 0, updatedAt: Date.now() });
+      await publishClassProgress(classroom.code, { name: classroom.name, chapter, quizzes: classroom.quizzes || {}, minWeek: wk, words: (latestRef.current.myWords || []).slice(0, 25).map((w) => w.word), wcpm: (latestRef.current.fluency || []).slice(-1)[0]?.wcpm || 0, updatedAt: Date.now() });
     } catch { /* will sync next update */ }
     if (finishedNow) {
       celebrate();
@@ -877,6 +909,182 @@ export default function ShelfLife() {
     } catch {
       setChapGuess("");
     }
+  };
+
+  // ----- Family Link: parents follow their reader with a code — no email, no phone, no PII -----
+  const makeFamilyCode = (studentName) => {
+    if (!teaching) return;
+    const existing = teaching.family || {};
+    const found = Object.entries(existing).find(([, n]) => n === studentName);
+    if (found) return found[0];
+    let code = makeClassCode();
+    while (existing[code]) code = makeClassCode();
+    const updated = { ...teaching, family: { ...existing, [code]: studentName } };
+    createClassRecord(updated).then(() => persist({ teaching: updated })).catch(() => flash("Couldn't create the code"));
+    return code;
+  };
+
+  const joinFamily = async () => {
+    const code = famCodeInput.trim().toUpperCase();
+    if (code.length < 4) return;
+    setFamBusy(true);
+    try {
+      // A family code lives inside its class record — find the class that owns it
+      const cls = await fetchClassRecord(code);
+      let owner = null, student = null;
+      if (cls?.family) { owner = cls; }
+      if (!owner) {
+        const idx = await storage.list("class:", true);
+        for (const k of (idx?.keys || []).slice(0, 300)) {
+          try {
+            const rec = JSON.parse((await storage.get(k, true)).value);
+            if (rec?.family?.[code]) { owner = rec; student = rec.family[code]; break; }
+          } catch { /* skip */ }
+        }
+      }
+      if (!owner || !student) { flash("Couldn't find that family code — check with the teacher"); setFamBusy(false); return; }
+      const fam = { code, classCode: owner.code, student, className: owner.className, teacher: owner.teacher, book: owner.book, chapters: owner.chapters };
+      persist({ family: fam });
+      await refreshFamily(fam);
+      flash(`You're following ${student}'s reading 💛`);
+    } catch { flash("Something went wrong — try again"); }
+    setFamBusy(false);
+  };
+
+  const refreshFamily = async (famArg) => {
+    const fam = famArg || family;
+    if (!fam) return;
+    try {
+      const [prog, msgs, cls] = await Promise.all([
+        fetchStudentProgress(fam.classCode, fam.student),
+        fetchFamilyMessages(fam.classCode, fam.student),
+        fetchClassRecord(fam.classCode),
+      ]);
+      setFamProgress(prog);
+      setFamMsgs(msgs || []);
+      if (cls) persist({ family: { ...fam, book: cls.book, chapters: cls.chapters, className: cls.className, teacher: cls.teacher, assignments: cls.assignments || [], notice: cls.notice || "" } });
+    } catch { /* keep showing what we have */ }
+  };
+  useEffect(() => {
+    if (tab === "classroom" && family) {
+      refreshFamily();
+      setTimeout(() => persist({ famSeen: Date.now() }), 2500); // mark read after a look
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const unreadFamily = famMsgs.filter((m) => m.at > (famSeen || 0)).length;
+
+  const ackMessage = async (id) => {
+    const next = famMsgs.map((m) => (m.id === id ? { ...m, ack: Date.now() } : m));
+    setFamMsgs(next);
+    try { await saveFamilyMessages(family.classCode, family.student, next); } catch { /* fine */ }
+  };
+
+  // Teacher side: send a note straight to the family's app
+  const sendToFamily = async (studentName, text) => {
+    if (!teaching || !text) return;
+    try {
+      const cur = await fetchFamilyMessages(teaching.code, studentName);
+      const next = [...cur, { id: uid(), from: teaching.teacher, text, at: Date.now(), ack: 0 }].slice(-40);
+      await saveFamilyMessages(teaching.code, studentName, next);
+      flash(`Sent to ${studentName}'s family ✉️`);
+    } catch { flash("Couldn't send — try again"); }
+  };
+
+  // Weekly digest a family can actually act on
+  const familyDigest = async () => {
+    if (!family || !famProgress) return;
+    setFamBusy(true);
+    try {
+      const qs = Object.values(famProgress.quizzes || {});
+      const text = await askTool(`Write a short, warm weekly update for the family of ${family.student}, who is reading "${family.book}" with their class. This week: on chapter ${famProgress.chapter || 0} of ${family.chapters}, passed ${qs.filter((q) => q.passed).length} of ${qs.length || 0} chapter checks${famProgress.minWeek ? `, read ${famProgress.minWeek} minutes in the app` : ""}${famProgress.wcpm ? `, reads about ${famProgress.wcpm} words per minute out loud` : ""}. Write 3 sentences for the family: what went well, what's coming up, and ONE specific five-minute thing they can do at home tonight. Warm and plain — no jargon, no scores framed as grades. Respond with only the update.`, 350);
+      setTool({ kind: "digest", loading: false, text });
+    } catch { flash("Couldn't build this week's update"); }
+    setFamBusy(false);
+  };
+
+  // ----- Teacher tools that only work because we have the book AND the data -----
+  const askTool = async (prompt, maxTokens) => {
+    const r = await fetch("/api/claude", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: maxTokens || 900, messages: [{ role: "user", content: prompt }] }),
+    });
+    const d = await r.json();
+    return (d.content || []).filter((x) => x.type === "text").map((x) => x.text).join("\n").trim();
+  };
+
+  // 1) Small groups from real reading data (FCRR: flexible groups formed from data)
+  const makeGroups = async () => {
+    if (!teaching || !roster?.length) { flash("No readers yet — groups need at least a few students"); return; }
+    setTool({ kind: "groups", loading: true });
+    const lines = roster.map((r) => {
+      const qs = Object.values(r.quizzes || {});
+      const passed = qs.filter((q) => q.passed).length;
+      return `${r.name}: chapter ${r.chapter || 0}/${teaching.chapters}, ${passed}/${qs.length || 0} quizzes passed${r.wcpm ? `, reads ${r.wcpm} wpm aloud` : ""}${r.minWeek ? `, ${r.minWeek} min this week` : ""}`;
+    }).join("\n");
+    try {
+      const text = await askTool(`You are helping a teacher form flexible small reading groups for "${teaching.book}" (${teaching.chapters} chapters). Here is the class data:\n${lines}\n\nSuggest 2-4 flexible groups. Every student appears in exactly one group. Never rank students or label anyone "low" or "struggling" — describe the INSTRUCTIONAL NEED instead (e.g. "needs a check-in on pace", "ready for an inference mini-lesson", "ready to stretch"). Give each group a warm name, the member names, the need, and one concrete 10-minute activity for that group using this book.\n\nRespond with ONLY JSON, no markdown: [{"name":"...","members":["..."],"need":"...","activity":"..."}]`, 1100);
+      setTool({ kind: "groups", loading: false, data: JSON.parse(text.replace(/\`\`\`json|\`\`\`/g, "").trim()) });
+    } catch { flash("Couldn't build groups — try again"); setTool(null); }
+  };
+
+  // 2) Discussion questions for a chapter of THIS book
+  const makeDiscussion = async (n) => {
+    if (!teaching) return;
+    setTool({ kind: "discuss", loading: true, chapter: n });
+    try {
+      const text = await askTool(`Create a ready-to-run book discussion for chapter ${n} of "${teaching.book}"${teaching.bookAuthor ? ` by ${teaching.bookAuthor}` : ""}, for a class of beginner readers. If you're unsure of that exact chapter, base it on the story up to that point. Warm and conversational, not a quiz. Respond with ONLY JSON, no markdown: {"warmup":"a 2-minute opener question anyone can answer","questions":["4 text-dependent discussion questions"],"debate":"one question with no right answer that will split the room","exit":"a one-sentence exit ticket prompt"}`, 900);
+      setTool({ kind: "discuss", loading: false, chapter: n, data: JSON.parse(text.replace(/\`\`\`json|\`\`\`/g, "").trim()) });
+    } catch { flash("Couldn't build the discussion — try again"); setTool(null); }
+  };
+
+  // 3) Class vocabulary report — built from words students ACTUALLY tapped
+  const makeVocab = async () => {
+    if (!roster?.length) { flash("No readers yet"); return; }
+    const counts = {};
+    roster.forEach((r) => (r.words || []).forEach((w) => { counts[w] = (counts[w] || 0) + 1; }));
+    const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (!ranked.length) { flash("No tapped words yet — this fills in as readers use the reader 📖"); return; }
+    setTool({ kind: "vocab", loading: true });
+    try {
+      const text = await askTool(`A class reading "${teaching.book}" tapped these words for help while reading (word: how many students): ${ranked.map(([w, c]) => `${w}: ${c}`).join(", ")}. For each word give a kid-friendly one-line meaning and a 1-sentence example using it. Then suggest one 5-minute whole-class warm-up activity using several of these words together. Respond with ONLY JSON, no markdown: {"words":[{"word":"...","meaning":"...","example":"..."}],"warmup":"..."}`, 1100);
+      const data = JSON.parse(text.replace(/\`\`\`json|\`\`\`/g, "").trim());
+      setTool({ kind: "vocab", loading: false, data, counts: Object.fromEntries(ranked) });
+    } catch { flash("Couldn't build the vocabulary report — try again"); setTool(null); }
+  };
+
+  // 4) Family note — specific, warm, in the family's language
+  const makeFamilyNote = async (r, lang) => {
+    if (!teaching) return;
+    setTool({ kind: "note", loading: true, forName: r.name });
+    const qs = Object.values(r.quizzes || {});
+    const think = qs.map((q) => q.think).filter(Boolean).slice(-1)[0];
+    try {
+      const text = await askTool(`Write a short, warm note from ${teaching.teacher} to the family of ${r.name} about their reading. Facts: reading "${teaching.book}", on chapter ${r.chapter || 0} of ${teaching.chapters}, passed ${qs.filter((q) => q.passed).length} of ${qs.length || 0} chapter checks${r.minWeek ? `, read ${r.minWeek} minutes in the app this week` : ""}${think ? `. Something they wrote: "${think}"` : ""}. 3-4 sentences. Lead with something genuinely good. If there's a concern, phrase it as an invitation, never a complaint. End with one specific thing the family can do at home in five minutes. ${lang === "es" ? "Write the entire note in warm, natural Spanish." : "Write in English."} Respond with only the note text.`, 400);
+      setTool({ kind: "note", loading: false, forName: r.name, text, lang });
+    } catch { flash("Couldn't write the note — try again"); setTool(null); }
+  };
+
+  // ----- Multiple classes: switch between them, close one without losing the rest -----
+  const switchClass = async (code) => {
+    const c = (classes || []).find((x) => x.code === code);
+    if (!c) return;
+    setRoster(null);
+    setQuizBank({});
+    persist({ teaching: c });
+    try {
+      const fresh = await fetchClassRecord(code);
+      if (fresh) persist({ teaching: fresh });
+      setRoster(await fetchRoster(code));
+    } catch { /* dashboard still renders */ }
+  };
+  const closeClass = (code) => {
+    const rest = (classes || []).filter((x) => x.code !== code);
+    setRoster(null);
+    persist({ classes: rest, teaching: rest[0] || null });
+    flash(rest.length ? "Class closed — switched to your other class" : "Class closed on this device");
   };
 
   // ----- Conference notes: the thing research says actually works -----
@@ -1069,7 +1277,7 @@ Respond with ONLY a JSON object, no markdown:
     if (score >= total - 1) celebrate();
     try {
       const wk2 = (latestRef.current.readLog || []).slice(-7).reduce((a, x) => a + (x.min || 0), 0);
-      await publishClassProgress(classroom.code, { name: classroom.name, chapter: classroom.chapter, quizzes, minWeek: wk2, wcpm: (latestRef.current.fluency || []).slice(-1)[0]?.wcpm || 0, updatedAt: Date.now() });
+      await publishClassProgress(classroom.code, { name: classroom.name, chapter: classroom.chapter, quizzes, minWeek: wk2, words: (latestRef.current.myWords || []).slice(0, 25).map((w) => w.word), wcpm: (latestRef.current.fluency || []).slice(-1)[0]?.wcpm || 0, updatedAt: Date.now() });
     } catch { /* syncs next time */ }
   };
 
@@ -1082,10 +1290,18 @@ Respond with ONLY a JSON object, no markdown:
   // Live snapshot of ALL persisted state, refreshed every render — persist()
   // reads from here so a save can never overwrite fields with stale values.
   const latestRef = useRef({});
-  latestRef.current = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, myWords, voicePref, newsDigest, quizNudgeDismissed, readLog, fluency, lastSpotlight, onboarded, userName, role };
+  latestRef.current = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, myWords, voicePref, newsDigest, quizNudgeDismissed, readLog, fluency, classes, family, famSeen, lastSpotlight, onboarded, userName, role };
 
   const persist = (patch) => {
     const next = { ...latestRef.current, ...patch };
+    // Any update to the active class flows into the teacher's class list
+    if (patch.teaching && patch.classes === undefined) {
+      const t = patch.teaching;
+      const list = next.classes || [];
+      next.classes = list.some((c) => c.code === t.code)
+        ? list.map((c) => (c.code === t.code ? t : c))
+        : [...list, t];
+    }
     if (patch.voicePref2 !== undefined) next.voicePref = patch.voicePref2;
     next.voicePref2 = next.voicePref; // stored under this key
     latestRef.current = { ...next }; // rapid back-to-back saves see each other
@@ -1104,6 +1320,9 @@ Respond with ONLY a JSON object, no markdown:
     setQuizNudgeDismissed(next.quizNudgeDismissed || false);
     setReadLog(next.readLog || []);
     setFluency(next.fluency || []);
+    setClasses(next.classes || []);
+    setFamily(next.family !== undefined ? next.family : null);
+    setFamSeen(next.famSeen || 0);
     setLastSpotlight(next.lastSpotlight || "");
     setOnboarded(next.onboarded);
     setUserName(next.userName);
@@ -2227,7 +2446,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v31</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v33</span>
         </p>
       </header>
 
@@ -2238,7 +2457,7 @@ Respond with ONLY a JSON object, no markdown:
           ["shelf", "My shelf"],
           ["discover", "Find a book"],
           ["read", "Read 📱"],
-          ["classroom", "Classroom"],
+          ["classroom", unreadFamily > 0 ? `Classroom (${unreadFamily})` : "Classroom"],
           ["more", "More"],
         ].map(([id, label]) => (
           <button
@@ -3592,6 +3811,14 @@ Respond with ONLY a JSON object, no markdown:
                     <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 19, color: T.ink }}>We're a family</div>
                     <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }}>Read together at home — set family rewards like movie night</div>
                   </button>
+                  <button onClick={() => setClassMode("family-join")} style={{
+                    flex: "1 1 240px", background: T.card, border: `2px solid ${T.blue}`, borderRadius: 12,
+                    padding: "22px 18px", cursor: "pointer", textAlign: "center", fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                  }}>
+                    <div style={{ fontSize: 34 }}>💛</div>
+                    <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 19, color: T.ink }}>Follow my reader</div>
+                    <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }}>Parents: enter your family code to see progress & teacher notes</div>
+                  </button>
                   <button onClick={() => { setClassForm({ ...classForm, kind: "class" }); setClassMode("student-join"); }} style={{
                     flex: "1 1 240px", background: T.card, border: `2px solid ${T.green}`, borderRadius: 12,
                     padding: "22px 18px", cursor: "pointer", textAlign: "center", fontFamily: "'Atkinson Hyperlegible', sans-serif",
@@ -3663,6 +3890,103 @@ Respond with ONLY a JSON object, no markdown:
               </Ruled>
             )}
 
+            {/* Family join */}
+            {classMode === "family-join" && !family && (
+              <Ruled>
+                <div style={{ fontWeight: 700, marginBottom: 4, lineHeight: "28px" }}>Follow your reader 💛</div>
+                <div style={{ fontSize: 12.5, color: T.inkSoft, lineHeight: "28px" }}>
+                  Ask your child's teacher for your family code. We never ask for your email or phone number.
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: 4 }}>
+                  <input style={{ ...input, flex: "1 1 160px", letterSpacing: 3, textTransform: "uppercase", fontWeight: 700 }}
+                    placeholder="FAMILY CODE" maxLength={6} value={famCodeInput}
+                    onChange={(e) => setFamCodeInput(e.target.value.toUpperCase())} />
+                  <button style={{ ...btn(), opacity: famCodeInput.trim().length >= 4 && !famBusy ? 1 : 0.5 }}
+                    disabled={famCodeInput.trim().length < 4 || famBusy} onClick={joinFamily}>
+                    {famBusy ? "Looking…" : "Follow"}
+                  </button>
+                  <button style={ghostBtn} onClick={() => setClassMode(null)}>Back</button>
+                </div>
+              </Ruled>
+            )}
+
+            {/* Parent dashboard */}
+            {family && (() => {
+              const pct = Math.round(((famProgress?.chapter || 0) / (family.chapters || 1)) * 100);
+              const qs = Object.values(famProgress?.quizzes || {});
+              const nextDue = (family.assignments || []).find((a) => (famProgress?.chapter || 0) < a.chapter);
+              return (
+                <div>
+                  <div style={{ background: T.card, border: `2px solid ${T.blue}`, borderRadius: 14, padding: "16px 18px", marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, letterSpacing: "0.14em", color: T.blue, fontWeight: 700 }}>FOLLOWING</div>
+                    <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 24 }}>{family.student}</div>
+                    <div style={{ fontSize: 13, color: T.inkSoft }}>
+                      {family.className} · {family.teacher} · reading <strong>{family.book}</strong>
+                    </div>
+                    <div style={{ height: 10, background: "#E4DECB", borderRadius: 99, marginTop: 12 }}>
+                      <div style={{ height: 10, borderRadius: 99, width: `${pct}%`, background: pct >= 100 ? T.green : T.blue, transition: "width .3s" }} />
+                    </div>
+                    <div style={{ fontSize: 13, marginTop: 5 }}>
+                      Chapter <strong>{famProgress?.chapter || 0}</strong> of {family.chapters}
+                      {qs.length > 0 ? <> · <strong>{qs.filter((q) => q.passed).length}</strong> chapter checks passed</> : null}
+                      {famProgress?.minWeek ? <> · <strong>{famProgress.minWeek}</strong> min read this week</> : null}
+                    </div>
+                    {nextDue && (
+                      <div style={{ fontSize: 13, marginTop: 6, color: T.stamp }}>
+                        📋 Next up: chapter {nextDue.chapter} by {dueLabel(nextDue.due).text}
+                      </div>
+                    )}
+                    <button style={{ ...ghostBtn, marginTop: 10, padding: "4px 12px", fontSize: 12 }} onClick={() => refreshFamily()}>Refresh ↻</button>
+                  </div>
+
+                  {family.notice && (
+                    <div style={{ background: "#FDF6EE", border: `2px dashed ${T.stamp}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.stamp, fontWeight: 700 }}>📣 NOTE TO THE WHOLE CLASS</div>
+                      <div style={{ fontSize: 14.5, marginTop: 2 }}>{family.notice}</div>
+                    </div>
+                  )}
+
+                  <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18, margin: "0 0 8px" }}>
+                    Messages from {family.teacher}
+                    {unreadFamily > 0 && <span style={{ fontSize: 12, background: T.stamp, color: "#FFF", borderRadius: 999, padding: "2px 9px", marginLeft: 8 }}>{unreadFamily} new</span>}
+                  </h3>
+                  {famMsgs.length === 0 && <p style={{ fontSize: 13.5, color: T.inkSoft }}>No messages yet — they'll appear here.</p>}
+                  {famMsgs.slice().reverse().map((m) => (
+                    <div key={m.id} style={{
+                      background: m.at > (famSeen || 0) ? "#F5F8FC" : T.paper,
+                      border: `1px solid ${m.at > (famSeen || 0) ? T.blue : T.rule}`,
+                      borderRadius: 10, padding: "11px 14px", marginBottom: 8,
+                    }}>
+                      <div style={{ fontSize: 11.5, color: T.inkSoft }}>
+                        {new Date(m.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · {m.from}
+                      </div>
+                      <div style={{ fontSize: 14.5, marginTop: 3, whiteSpace: "pre-wrap" }}>{m.text}</div>
+                      {m.ack ? (
+                        <div style={{ fontSize: 11.5, color: T.green, marginTop: 5 }}>✓ You let the teacher know you saw this</div>
+                      ) : (
+                        <button style={{ ...ghostBtn, marginTop: 6, padding: "3px 12px", fontSize: 12 }} onClick={() => ackMessage(m.id)}>👍 Got it</button>
+                      )}
+                    </div>
+                  ))}
+
+                  <button style={{ ...btn(T.green), marginTop: 8, opacity: famBusy ? 0.6 : 1 }} disabled={famBusy} onClick={familyDigest}>
+                    ✨ This week, and one thing to do tonight
+                  </button>
+                  {tool?.kind === "digest" && tool.text && (
+                    <div style={{ marginTop: 10, border: `1.5px dashed ${T.green}`, borderRadius: 10, background: "#F0F5F0", padding: "12px 15px", fontSize: 14.5 }}>
+                      {tool.text}
+                      <div><button style={{ ...ghostBtn, marginTop: 8, padding: "3px 11px", fontSize: 11.5 }} onClick={() => setTool(null)}>Close</button></div>
+                    </div>
+                  )}
+
+                  <button style={{ ...ghostBtn, marginTop: 14, borderColor: T.stamp, color: T.stamp }}
+                    onClick={() => { persist({ family: null }); setFamProgress(null); setFamMsgs([]); setClassMode(null); }}>
+                    Stop following
+                  </button>
+                </div>
+              );
+            })()}
+
             {/* Teacher dashboard */}
             {teaching && (
               <div>
@@ -3692,7 +4016,41 @@ Respond with ONLY a JSON object, no markdown:
                   </div>
                 </div>
 
-                {roster && roster.length > 0 && (() => {
+                {/* Class switcher — one row per class this teacher runs */}
+                {(classes || []).length > 1 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                    {classes.map((c) => (
+                      <button key={c.code} onClick={() => switchClass(c.code)} style={{
+                        padding: "6px 14px", borderRadius: 999, fontSize: 13, cursor: "pointer", fontWeight: 700,
+                        border: `1.5px solid ${c.code === teaching.code ? T.blue : T.rule}`,
+                        background: c.code === teaching.code ? T.blue : "transparent",
+                        color: c.code === teaching.code ? "#FFF" : T.ink,
+                        fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                      }}>
+                        {c.className}
+                      </button>
+                    ))}
+                    <button onClick={() => { setClassForm({ teacher: teaching.teacher, className: "", book: "", chapters: "", kind: teaching.kind || "class" }); setClassMode("teacher-setup"); }}
+                      style={{ padding: "6px 14px", borderRadius: 999, fontSize: 13, cursor: "pointer", fontWeight: 700, border: `1.5px dashed ${T.green}`, background: "transparent", color: T.green, fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
+                      + New class
+                    </button>
+                  </div>
+                )}
+
+                {/* Calm sub-navigation: one job per pane */}
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 14, borderBottom: `2px solid ${T.rule}`, paddingBottom: 8 }}>
+                  {[["readers", "👀 Readers"], ["assign", "📋 Assign"], ["toolkit", "🧰 Toolkit"], ["rewards", "🎁 Rewards"]].map(([k, label]) => (
+                    <button key={k} onClick={() => setTPane(k)} style={{
+                      padding: "7px 14px", borderRadius: 8, fontSize: 13.5, cursor: "pointer", fontWeight: 700,
+                      border: "none", background: tPane === k ? "#DDE8F6" : "transparent",
+                      color: tPane === k ? T.blue : T.inkSoft, fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                    }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {tPane === "readers" && roster && roster.length > 0 && (() => {
                   const avgCh = (roster.reduce((a, x) => a + (x.chapter || 0), 0) / roster.length).toFixed(1);
                   const weekAgo = Date.now() - 7 * 86400000;
                   const quizWeek = roster.reduce((a, x) => a + Object.values(x.quizzes || {}).filter((q) => q.at > weekAgo && q.passed).length, 0);
@@ -3712,6 +4070,7 @@ Respond with ONLY a JSON object, no markdown:
                   );
                 })()}
 
+                {tPane === "readers" && (<>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
                   <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: 0 }}>
                     Where your readers are
@@ -3776,10 +4135,32 @@ Respond with ONLY a JSON object, no markdown:
                                 <button style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }} onClick={() => setNoteDraft((d) => ({ ...d, [nm]: undefined }))}>Cancel</button>
                               </div>
                             ) : (
-                              <button style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 11.5, padding: "3px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
-                                onClick={() => setNoteDraft((d) => ({ ...d, [nm]: notes[nm] || "" }))}>
-                                {notes[nm] ? "edit note" : "+ add a conference note"}
-                              </button>
+                              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                                <button style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 11.5, padding: "3px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                                  onClick={() => setNoteDraft((d) => ({ ...d, [nm]: notes[nm] || "" }))}>
+                                  {notes[nm] ? "edit note" : "+ add a conference note"}
+                                </button>
+                                <button style={{ background: "none", border: "none", color: T.blue, cursor: "pointer", fontSize: 11.5, padding: "3px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                                  onClick={() => { setTPane("toolkit"); makeFamilyNote(s, "en"); }}>
+                                  ✉️ write a family note
+                                </button>
+                                {(() => {
+                                  const fc = Object.entries(teaching.family || {}).find(([, n]) => n === nm)?.[0];
+                                  return fc ? (
+                                    <span style={{ fontSize: 11.5, color: T.green, fontWeight: 700 }}>
+                                      💛 family code: {fc}
+                                      <button style={{ ...ghostBtn, marginLeft: 6, padding: "1px 8px", fontSize: 10.5 }} onClick={() => copyCode(fc)}>
+                                        {copied === fc ? "copied ✓" : "copy"}
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button style={{ background: "none", border: "none", color: T.green, cursor: "pointer", fontSize: 11.5, padding: "3px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                                      onClick={() => { const c = makeFamilyCode(nm); if (c) flash(`Family code for ${nm}: ${c} — share it with the family 💛`); }}>
+                                      💛 invite the family
+                                    </button>
+                                  );
+                                })()}
+                              </div>
                             )}
                           </div>
                         );
@@ -3808,12 +4189,12 @@ Respond with ONLY a JSON object, no markdown:
                   );
                 })}
 
-                {/* Teacher toolbox */}
-                <div style={{ marginTop: 22 }}>
-                  <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: "0 0 8px" }}>
-                    {teaching.kind === "family" ? "Family tools 🧰" : "Teacher tools 🧰"}
-                  </h2>
+                </>)}
 
+                {/* Teacher toolbox */}
+                {(tPane === "assign" || tPane === "toolkit") && (
+                <div style={{ marginTop: 4 }}>
+                  {tPane === "assign" && (<>
                   <button style={{ ...btn(), marginBottom: 12 }} onClick={() => setReport("class")}>
                     📄 Class progress report (print / PDF)
                   </button>
@@ -3870,6 +4251,113 @@ Respond with ONLY a JSON object, no markdown:
                       </div>
                     )}
                   </Ruled>
+
+                  </>)}
+
+                  {tPane === "toolkit" && (<>
+                  {/* Tools that use this class's book + real reading data */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 18, marginBottom: 2 }}>Save yourself an hour 🧰</div>
+                    <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "0 0 10px" }}>
+                      Built from your book and what your readers actually did — not generic templates.
+                    </p>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8 }}>
+                      <button style={{ ...btn(T.green), padding: "12px 14px", fontSize: 13.5 }} onClick={makeGroups}>
+                        👥 Make my small groups
+                      </button>
+                      <button style={{ ...btn(), padding: "12px 14px", fontSize: 13.5 }}
+                        onClick={() => makeDiscussion(Math.max(1, Math.min(teaching.chapters, Math.round((roster || []).reduce((a, x) => a + (x.chapter || 0), 0) / Math.max(1, (roster || []).length)) || 1)))}>
+                        💬 Discussion questions
+                      </button>
+                      <button style={{ ...btn(), padding: "12px 14px", fontSize: 13.5 }} onClick={makeVocab}>
+                        📖 Class vocabulary report
+                      </button>
+                      <button style={{ ...ghostBtn, padding: "12px 14px", fontSize: 13.5 }} onClick={() => { setTPane("readers"); flash("Tap a reader's name row to write a family note ✉️"); }}>
+                        ✉️ Family notes
+                      </button>
+                    </div>
+
+                    {tool && (
+                      <div style={{ marginTop: 12, border: `1.5px solid ${T.blue}`, borderRadius: 12, background: "#F5F8FC", padding: "14px 16px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <strong style={{ fontSize: 15 }}>
+                            {tool.kind === "groups" ? "👥 Suggested small groups" : tool.kind === "discuss" ? `💬 Chapter ${tool.chapter} discussion` : tool.kind === "vocab" ? "📖 What your class is stumbling on" : "✉️ Family note"}
+                          </strong>
+                          <button aria-label="Close" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 16 }} onClick={() => setTool(null)}>✕</button>
+                        </div>
+                        {tool.loading && <div style={{ color: T.inkSoft, fontSize: 13.5 }}>Working from your class data…</div>}
+
+                        {tool.kind === "groups" && tool.data && tool.data.map((g, i) => (
+                          <div key={i} style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 10, padding: "10px 13px", marginBottom: 8 }}>
+                            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16 }}>{g.name}</div>
+                            <div style={{ fontSize: 13, color: T.blue, fontWeight: 700 }}>{(g.members || []).join(" · ")}</div>
+                            <div style={{ fontSize: 13, marginTop: 3 }}><strong>Focus:</strong> {g.need}</div>
+                            <div style={{ fontSize: 13, marginTop: 2 }}><strong>10 minutes:</strong> {g.activity}</div>
+                          </div>
+                        ))}
+
+                        {tool.kind === "discuss" && tool.data && (
+                          <div style={{ fontSize: 13.5 }}>
+                            <div style={{ marginBottom: 8 }}><strong>Warm-up:</strong> {tool.data.warmup}</div>
+                            <strong>Discussion:</strong>
+                            <ol style={{ margin: "4px 0 8px", paddingLeft: 20 }}>
+                              {(tool.data.questions || []).map((q, i) => <li key={i} style={{ marginBottom: 3 }}>{q}</li>)}
+                            </ol>
+                            <div style={{ marginBottom: 8, padding: "8px 11px", background: "#FDF6EE", borderLeft: `3px solid ${T.stamp}`, borderRadius: 4 }}>
+                              <strong>Split the room:</strong> {tool.data.debate}
+                            </div>
+                            <div><strong>Exit ticket:</strong> {tool.data.exit}</div>
+                            <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                              <button style={{ ...ghostBtn, padding: "4px 11px", fontSize: 12 }} onClick={() => makeDiscussion(Math.max(1, (tool.chapter || 1) - 1))}>← Earlier chapter</button>
+                              <button style={{ ...ghostBtn, padding: "4px 11px", fontSize: 12 }} onClick={() => makeDiscussion(Math.min(teaching.chapters, (tool.chapter || 1) + 1))}>Later chapter →</button>
+                            </div>
+                          </div>
+                        )}
+
+                        {tool.kind === "vocab" && tool.data && (
+                          <div style={{ fontSize: 13.5 }}>
+                            <p style={{ margin: "0 0 8px", color: T.inkSoft, fontSize: 12.5 }}>
+                              These are the words your readers actually tapped for help this week.
+                            </p>
+                            {(tool.data.words || []).map((w, i) => (
+                              <div key={i} style={{ padding: "6px 0", borderTop: `1px solid ${T.rule}` }}>
+                                <strong>{w.word}</strong>
+                                {tool.counts?.[w.word] > 1 && <span style={{ fontSize: 11.5, color: T.stamp, marginLeft: 6 }}>{tool.counts[w.word]} readers</span>}
+                                <div>{w.meaning}</div>
+                                <div style={{ color: T.inkSoft, fontStyle: "italic" }}>{w.example}</div>
+                              </div>
+                            ))}
+                            {tool.data.warmup && (
+                              <div style={{ marginTop: 10, padding: "9px 12px", background: "#F0F5F0", borderRadius: 8 }}>
+                                <strong>5-minute warm-up:</strong> {tool.data.warmup}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {tool.kind === "note" && tool.text && (
+                          <div>
+                            <div style={{ fontSize: 14, background: T.card, border: `1px solid ${T.rule}`, borderRadius: 8, padding: "11px 13px", whiteSpace: "pre-wrap" }}>
+                              {tool.text}
+                            </div>
+                            <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                              <button style={{ ...btn(T.green), padding: "5px 13px", fontSize: 12.5 }}
+                                onClick={() => sendToFamily(tool.forName, tool.text)}>
+                                ✉️ Send to their family
+                              </button>
+                              <button style={{ ...ghostBtn, padding: "5px 13px", fontSize: 12.5 }} onClick={() => copyCode(tool.text)}>
+                                {copied === tool.text ? "Copied ✓" : "Copy note"}
+                              </button>
+                              <button style={{ ...ghostBtn, padding: "5px 13px", fontSize: 12.5 }}
+                                onClick={() => makeFamilyNote((roster || []).find((r) => r.name === tool.forName) || { name: tool.forName }, tool.lang === "es" ? "en" : "es")}>
+                                {tool.lang === "es" ? "Switch to English" : "Escribir en español 🇲🇽"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   {/* Message to the class */}
                   <Ruled style={{ marginBottom: 12 }}>
@@ -3938,10 +4426,13 @@ Respond with ONLY a JSON object, no markdown:
                       </div>
                     ))}
                   </Ruled>
+                  </>)}
                 </div>
+                )}
 
                 {/* Class rewards manager */}
-                <div style={{ marginTop: 22 }}>
+                {tPane === "rewards" && (
+                <div style={{ marginTop: 4 }}>
                   <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: "0 0 4px" }}>
                     {teaching.kind === "family" ? "Family rewards 🎁" : "Class rewards 🎁"}
                   </h2>
@@ -3993,8 +4484,10 @@ Respond with ONLY a JSON object, no markdown:
                   )}
                 </div>
 
+                )}
+
                 <button style={{ ...ghostBtn, marginTop: 12, borderColor: T.stamp, color: T.stamp }}
-                  onClick={() => { persist({ teaching: null }); setRoster(null); }}>
+                  onClick={() => closeClass(teaching.code)}>
                   Close this class on my device
                 </button>
               </div>
@@ -4579,6 +5072,7 @@ Respond with ONLY a JSON object, no markdown:
               ["Who can see a student's data", "Their teacher (chapters, quiz scores, and reading activity for the class book) and nobody else. Students are always listed alphabetically and never ranked against each other. No student can see another student's scores."],
               ["Where the data lives", "Personal reading data stays on the reader's own device. Classroom data (a class code, first names, chapter numbers, quiz scores) is stored in the app's database so the teacher's dashboard works across devices."],
               ["Deleting data", "A student can leave a class at any time from the Classroom tab, and a teacher can close a class, which removes it. Anything on the device is cleared by clearing the browser's data for this site. Requests for deletion can be sent to the operator of this app."],
+              ["Family access", "A family follows their reader with a short code the teacher shares — we never ask a parent for an email address, phone number, or name. Families see only their own child: chapter progress, chapter checks, minutes read, and messages from the teacher. Teacher messages to a family are stored so the family can read them in the app; there is no messaging between families or between students."],
               ["Under-13 readers (COPPA)", "Shelf Life is designed to be usable without any personally identifying information from a child. When a school adopts it for classroom use, the school provides consent on the family's behalf for educational use, as COPPA permits. Families may ask their teacher to remove a child from a class at any time."],
               ["Student records (FERPA)", "Any classroom data created in Shelf Life is held on behalf of the school as a school official with a legitimate educational interest, is used only to provide the service to that classroom, and is never used for any other purpose."],
               ["AI features", "Quizzes, summaries, word definitions, and recaps are generated by an AI model. Only the book title, chapter number, and the tapped word are sent — never a student's name, scores, or personal information. Student work is not used to train AI models."],
