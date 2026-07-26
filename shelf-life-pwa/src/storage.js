@@ -1,36 +1,11 @@
-// storage.js — drop-in replacement for the Claude artifact's window.storage API.
+// storage.js — personal data stays on the device; shared data goes through the
+// server gateway at /api/kv.
 //
-// Personal data  -> localStorage (works instantly, offline, no account needed)
-// Shared data    -> Supabase, IF configured via env vars; otherwise falls back
-//                   to localStorage so the app still runs (shared features just
-//                   won't sync between devices until Supabase is connected).
-//
-// To turn on real shared features (book club wall, meetups, classrooms):
-//   1. Create a free project at supabase.com
-//   2. Run this SQL in the Supabase SQL editor:
-//
-//        create table kv (
-//          key text primary key,
-//          value text not null,
-//          updated_at timestamptz default now()
-//        );
-//        alter table kv enable row level security;
-//        create policy "public read"  on kv for select using (true);
-//        create policy "public write" on kv for insert with check (true);
-//        create policy "public update" on kv for update using (true);
-//
-//      (Fine for a pilot. Before real scale, tighten policies + add auth.)
-//   3. In Vercel -> Project -> Settings -> Environment Variables, add:
-//        VITE_SUPABASE_URL      = https://xxxx.supabase.co
-//        VITE_SUPABASE_ANON_KEY = eyJ...
-//   4. Redeploy. Shared features now sync across every device.
+// SECURITY NOTE: the browser no longer holds any database credentials. Every
+// shared read/write is validated server-side (see api/kv.js), so a stranger
+// can't enumerate classes, read student progress, or overwrite records.
 
-import { createClient } from "@supabase/supabase-js";
-
-const url = import.meta.env.VITE_SUPABASE_URL;
-const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = url && anon ? createClient(url, anon) : null;
-export const sharedIsLive = !!supabase;
+export const sharedIsLive = true; // the gateway is always present in production
 
 const LOCAL_PREFIX = "shelflife:";
 
@@ -58,37 +33,26 @@ const local = {
   },
 };
 
+async function gateway(op, payload) {
+  const r = await fetch("/api/kv", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op, ...payload }),
+  });
+  if (!r.ok) throw new Error(`kv ${op} failed (${r.status})`);
+  return r.json();
+}
+
 const remote = {
-  async get(key) {
-    const { data, error } = await supabase.from("kv").select("value").eq("key", key).single();
-    if (error || !data) throw new Error("Key not found");
-    return { key, value: data.value, shared: true };
-  },
-  async set(key, value) {
-    const { error } = await supabase.from("kv").upsert({ key, value });
-    if (error) throw error;
-    return { key, value, shared: true };
-  },
-  async delete(key) {
-    await supabase.from("kv").delete().eq("key", key);
-    return { key, deleted: true, shared: true };
-  },
-  async list(prefix = "") {
-    const { data, error } = await supabase
-      .from("kv")
-      .select("key")
-      .like("key", `${prefix}%`)
-      .order("key", { ascending: false })
-      .limit(200);
-    if (error) throw error;
-    return { keys: (data || []).map((r) => r.key), prefix, shared: true };
-  },
+  get: (key) => gateway("get", { key }),
+  set: (key, value) => gateway("set", { key, value }),
+  delete: (key) => gateway("delete", { key }),
+  list: (prefix = "") => gateway("list", { prefix }),
 };
 
-// Same call signatures as the artifact API: (key, value?, shared?)
 export const storage = {
-  get: (key, shared = false) => (shared && supabase ? remote.get(key) : local.get(key)),
-  set: (key, value, shared = false) => (shared && supabase ? remote.set(key, value) : local.set(key, value)),
-  delete: (key, shared = false) => (shared && supabase ? remote.delete(key) : local.delete(key)),
-  list: (prefix = "", shared = false) => (shared && supabase ? remote.list(prefix) : local.list(prefix)),
+  get: (key, shared = false) => (shared ? remote.get(key) : local.get(key)),
+  set: (key, value, shared = false) => (shared ? remote.set(key, value) : local.set(key, value)),
+  delete: (key, shared = false) => (shared ? remote.delete(key) : local.delete(key)),
+  list: (prefix = "", shared = false) => (shared ? remote.list(prefix) : local.list(prefix)),
 };
