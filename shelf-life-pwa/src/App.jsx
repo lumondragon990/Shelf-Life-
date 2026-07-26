@@ -920,7 +920,10 @@ export default function ShelfLife() {
     let code = makeClassCode();
     while (existing[code]) code = makeClassCode();
     const updated = { ...teaching, family: { ...existing, [code]: studentName } };
-    createClassRecord(updated).then(() => persist({ teaching: updated })).catch(() => flash("Couldn't create the code"));
+    Promise.all([
+      createClassRecord(updated),
+      storage.set(`fam:${code}`, JSON.stringify({ classCode: teaching.code, student: studentName }), true),
+    ]).then(() => persist({ teaching: updated })).catch(() => flash("Couldn't create the code"));
     return code;
   };
 
@@ -930,18 +933,11 @@ export default function ShelfLife() {
     setFamBusy(true);
     try {
       // A family code lives inside its class record — find the class that owns it
-      const cls = await fetchClassRecord(code);
-      let owner = null, student = null;
-      if (cls?.family) { owner = cls; }
-      if (!owner) {
-        const idx = await storage.list("class:", true);
-        for (const k of (idx?.keys || []).slice(0, 300)) {
-          try {
-            const rec = JSON.parse((await storage.get(k, true)).value);
-            if (rec?.family?.[code]) { owner = rec; student = rec.family[code]; break; }
-          } catch { /* skip */ }
-        }
-      }
+      // One direct lookup — the app never downloads a list of classes
+      let pointer = null;
+      try { pointer = JSON.parse((await storage.get(`fam:${code}`, true)).value); } catch { /* not found */ }
+      const owner = pointer ? await fetchClassRecord(pointer.classCode) : null;
+      const student = pointer?.student;
       if (!owner || !student) { flash("Couldn't find that family code — check with the teacher"); setFamBusy(false); return; }
       const fam = { code, classCode: owner.code, student, className: owner.className, teacher: owner.teacher, book: owner.book, chapters: owner.chapters };
       persist({ family: fam });
@@ -2446,7 +2442,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v33</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v34</span>
         </p>
       </header>
 
