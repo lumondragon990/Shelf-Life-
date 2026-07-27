@@ -20,15 +20,15 @@ const hits = new Map();
 
 // Only these key shapes exist in the app. Anything else is rejected.
 const KEY_RULES = [
-  { re: /^class:[A-Z0-9]{4,8}$/, list: false },              // a class record
-  { re: /^cp:[A-Z0-9]{4,8}:[a-z0-9_-]{1,40}$/, list: true }, // student progress (roster lists these)
-  { re: /^cq:[A-Z0-9]{4,8}:\d{1,3}$/, list: false },         // shared chapter quiz
-  { re: /^fmsg:[A-Z0-9]{4,8}:[a-z0-9_-]{1,40}$/, list: false }, // teacher -> family messages
-  { re: /^fam:[A-Z0-9]{4,8}$/, list: false },                // family code -> student pointer
-  { re: /^wall:[a-z0-9_:-]{1,60}$/i, list: true },           // book club wall
-  { re: /^meet:[a-z0-9_:-]{1,60}$/i, list: true },           // meetups
-  { re: /^sync:[A-Z0-9]{4,10}$/, list: false },              // device sync payload
-  { re: /^apprating:[a-z0-9_:-]{1,60}$/i, list: false },     // write-only feedback
+  { re: /^class:[A-Z0-9]{4,8}$/, list: false },                        // a class record
+  { re: /^cp:[A-Z0-9]{4,8}:[A-Za-z0-9_-]{1,40}$/, list: true },        // student progress (roster lists these)
+  { re: /^cq:[A-Z0-9]{4,8}:\d{1,3}$/, list: false },                   // shared chapter quiz
+  { re: /^fmsg:[A-Z0-9]{4,8}:[A-Za-z0-9_-]{1,40}$/, list: false },     // teacher -> family messages
+  { re: /^fam:[A-Z0-9]{4,8}$/, list: false },                          // family code -> student pointer
+  { re: /^clubpost:[A-Za-z0-9_.:-]{1,80}$/, list: true },              // book club wall
+  { re: /^meetup:[A-Za-z0-9_.:-]{1,80}$/, list: true },                // meetups
+  { re: /^sync:[A-Z0-9]{4,12}$/, list: false },                        // device sync payload
+  { re: /^apprating:[A-Za-z0-9_.:-]{1,80}$/, list: false },            // write-only feedback
   { re: /^stats:readers$/, list: false },
 ];
 
@@ -76,7 +76,28 @@ async function sb(path, init) {
   return r;
 }
 
+function keyRole(jwt) {
+  // A Supabase key is a JWT; its "role" claim says anon vs service_role.
+  // Reading the claim reveals nothing secret and tells us if the RIGHT key is set.
+  try {
+    const payload = JSON.parse(Buffer.from(String(jwt).split(".")[1], "base64").toString());
+    return payload.role || "unknown";
+  } catch {
+    return "unreadable";
+  }
+}
+
 export default async function handler(req, res) {
+  // Health check: visit /api/kv in a browser to see what is configured.
+  if (req.method === "GET") {
+    return res.status(200).json({
+      ok: true,
+      supabaseUrlSet: Boolean(process.env.SUPABASE_URL),
+      serviceKeySet: Boolean(process.env.SUPABASE_SERVICE_KEY),
+      serviceKeyRole: process.env.SUPABASE_SERVICE_KEY ? keyRole(process.env.SUPABASE_SERVICE_KEY) : "missing",
+      note: "serviceKeyRole must be service_role. If it says anon, the wrong key is set.",
+    });
+  }
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
   if (!sameSite(req)) return res.status(403).json({ error: "Forbidden" });
 
@@ -107,19 +128,21 @@ export default async function handler(req, res) {
         headers: { Prefer: "resolution=merge-duplicates" },
         body: JSON.stringify({ key, value: val }),
       });
-      if (!r.ok) return res.status(500).json({ error: "Write failed" });
+      if (!r.ok) {
+        const detail = await r.text();
+        console.error("kv write failed", r.status, detail);
+        return res.status(500).json({ error: "Write failed", status: r.status, detail: detail.slice(0, 300) });
+      }
       return res.status(200).json({ key, value: val });
     }
 
     if (op === "list") {
-      // Listing is the enumeration risk, so it is allowed only for key shapes
-      // marked list:true AND only with a specific, fully-scoped prefix.
-      const scoped = KEY_RULES.some((r) => r.list && prefix && prefix.length >= 6 && r.re.test(`${prefix}x`.replace(/x$/, "a")));
-      const looksScoped = /^(cp:[A-Z0-9]{4,8}:|wall:|meet:)/.test(prefix || "");
-      if (!looksScoped && !scoped) return res.status(400).json({ error: "Prefix not allowed" });
+      // Listing is the enumeration risk, so only these scoped shapes are allowed
+      const ok = /^cp:[A-Z0-9]{4,8}:$/.test(prefix || "") || prefix === "clubpost:" || prefix === "meetup:";
+      if (!ok) return res.status(400).json({ error: "Prefix not allowed", prefix });
       const r = await sb(`kv?key=like.${encodeURIComponent(prefix + "%")}&select=key&limit=200`);
       const rows = await r.json();
-      return res.status(200).json({ keys: (rows || []).map((x) => x.key), prefix });
+      return res.status(200).json({ keys: Array.isArray(rows) ? rows.map((x) => x.key) : [], prefix });
     }
 
     if (op === "delete") {
