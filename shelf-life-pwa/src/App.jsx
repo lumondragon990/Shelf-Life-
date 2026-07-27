@@ -16,6 +16,29 @@ const T = {
 };
 const SPINES = ["#2B5EA7", "#C24632", "#3E7C59", "#D9A03F", "#7C5CB0", "#B85C8A", "#4A8C9E"];
 
+// ---------- Brand mark: open book with a sprout ----------
+function Mark({ size = 64, light = false }) {
+  const ink = light ? "#FCF9F0" : "#22334D";
+  const page = light ? "#2E4160" : "#FCF9F0";
+  const line = light ? "#7C90AE" : "#9FB0C6";
+  const leaf1 = light ? "#5FBF8B" : "#3E7C59";
+  const leaf2 = light ? "#8ED9AC" : "#5C9E77";
+  return (
+    <svg viewBox="0 0 512 512" width={size} height={size} aria-hidden="true" style={{ display: "block" }}>
+      <path d="M256 168 C 214 138, 150 126, 92 130 C 82 130.6, 76 137, 76 146 L 76 372 C 76 381, 83 388, 92 387 C 148 383, 213 393, 256 420 Z" fill={page} stroke={ink} strokeWidth="22" strokeLinejoin="round" />
+      <path d="M256 168 C 298 138, 362 126, 420 130 C 430 130.6, 436 137, 436 146 L 436 372 C 436 381, 429 388, 420 387 C 364 383, 299 393, 256 420 Z" fill={page} stroke={ink} strokeWidth="22" strokeLinejoin="round" />
+      <g stroke={line} strokeWidth="14" strokeLinecap="round">
+        <line x1="124" y1="212" x2="212" y2="222" /><line x1="124" y1="258" x2="206" y2="266" /><line x1="124" y1="304" x2="212" y2="312" />
+        <line x1="300" y1="222" x2="388" y2="212" /><line x1="306" y1="266" x2="388" y2="258" /><line x1="300" y1="312" x2="388" y2="304" />
+      </g>
+      <path d="M256 168 L256 420" stroke={ink} strokeWidth="22" strokeLinecap="round" />
+      <path d="M256 170 C 256 140, 256 118, 256 96" stroke={leaf1} strokeWidth="20" strokeLinecap="round" fill="none" />
+      <path d="M256 128 C 224 128, 200 110, 194 80 C 228 74, 250 94, 256 128 Z" fill={leaf1} />
+      <path d="M256 112 C 288 112, 314 92, 320 60 C 284 54, 260 76, 256 112 Z" fill={leaf2} />
+    </svg>
+  );
+}
+
 const spineColor = (title) => {
   let h = 0;
   for (let i = 0; i < title.length; i++) h = (h * 31 + title.charCodeAt(i)) >>> 0;
@@ -676,9 +699,14 @@ export default function ShelfLife() {
   const [rewardForm, setRewardForm] = useState({ prize: "", metric: "chapters", need: "", code: "" });
   const [noticeDraft, setNoticeDraft] = useState("");
   const [assignForm, setAssignForm] = useState({ chapter: "", due: "", note: "" });
+  const [hwForm, setHwForm] = useState({ chapter: "", due: "", kind: "comprehension", count: "4" });
+  const [hwDraft, setHwDraft] = useState(null); // {loading, title, items:[...], chapter, due, kind}
+  const [hwShow, setHwShow] = useState(false);
+  const [hwDoing, setHwDoing] = useState(null); // student: the homework being worked on
+  const [hwResults, setHwResults] = useState(null); // teacher: submissions for one homework
   const [showAssignForm, setShowAssignForm] = useState(false);
   const [report, setReport] = useState(null); // "class" | "me"
-  const [tPane, setTPane] = useState("readers"); // teacher dashboard pane
+  const [tPane, setTPane] = useState("home"); // teacher dashboard pane
   const [tool, setTool] = useState(null); // {kind, loading, data, forName}
   const [notes, setNotes] = useState({}); // studentName -> note text (teacher's private notes)
   const [noteDraft, setNoteDraft] = useState({});
@@ -1104,6 +1132,94 @@ export default function ShelfLife() {
     catch { flash("Couldn't save the note"); }
   };
 
+  // ----- Homework: AI drafts it, the TEACHER approves it, the app grades it -----
+  const HW_KINDS = {
+    comprehension: "reading comprehension questions about what happened and why",
+    vocabulary: "vocabulary questions using words from this part of the book",
+    response: "short written response prompts asking the reader to think, predict or connect",
+    mixed: "a mix of comprehension, vocabulary and one written response",
+  };
+
+  const draftHomework = async () => {
+    const ch = parseInt(hwForm.chapter);
+    if (!teaching || !ch) return;
+    const n = Math.max(2, Math.min(8, parseInt(hwForm.count) || 4));
+    setHwDraft({ loading: true, chapter: ch, due: hwForm.due, kind: hwForm.kind });
+    try {
+      const text = await askTool(`Create reading homework for chapter ${ch} of "${teaching.book}"${teaching.bookAuthor ? ` by ${teaching.bookAuthor}` : ""} for beginner readers. Focus: ${HW_KINDS[hwForm.kind]}. Make exactly ${n} items. If unsure of that exact chapter, ask about the story up to that point.
+
+Each item is either type "mc" (4 options, one correct) or type "open" (a short written answer, no single right answer). For every "open" item include a short "lookFor" note describing what a good answer contains, used only for feedback.
+
+Warm and encouraging, never like a test. Respond with ONLY JSON, no markdown:
+{"title":"short homework title","items":[{"type":"mc","q":"...","options":["..","..","..",".."],"answer":0},{"type":"open","q":"...","lookFor":"..."}]}`, 1200);
+      const parsed = JSON.parse(text.replace(/\u0060\u0060\u0060json|\u0060\u0060\u0060/g, "").trim());
+      if (!parsed?.items?.length) throw new Error("bad");
+      setHwDraft({ loading: false, chapter: ch, due: hwForm.due, kind: hwForm.kind, title: parsed.title || `Chapter ${ch} homework`, items: parsed.items.slice(0, 8) });
+    } catch {
+      flash("Couldn't draft that — try again");
+      setHwDraft(null);
+    }
+  };
+
+  const publishHomework = async () => {
+    if (!teaching || !hwDraft?.items) return;
+    const hw = {
+      id: uid(), chapter: hwDraft.chapter, due: hwDraft.due || "",
+      title: hwDraft.title, items: hwDraft.items, at: Date.now(),
+    };
+    const updated = { ...teaching, homework: [...(teaching.homework || []), hw] };
+    try {
+      await createClassRecord(updated);
+      persist({ teaching: updated });
+      setHwDraft(null); setHwShow(false);
+      setHwForm({ chapter: "", due: "", kind: "comprehension", count: "4" });
+      flash("Homework posted — your readers see it now 📝");
+    } catch { flash("Couldn't post it — try again"); }
+  };
+
+  const deleteHomework = async (id) => {
+    if (!teaching) return;
+    const updated = { ...teaching, homework: (teaching.homework || []).filter((h) => h.id !== id) };
+    try { await createClassRecord(updated); persist({ teaching: updated }); } catch { flash("Couldn't remove it"); }
+  };
+
+  // Student submits; multiple choice is instant, written answers get AI feedback
+  const submitHomework = async () => {
+    if (!hwDoing || !classroom) return;
+    setHwDoing({ ...hwDoing, grading: true });
+    const items = hwDoing.items;
+    let correct = 0, mcCount = 0;
+    items.forEach((it, i) => {
+      if (it.type === "mc") { mcCount += 1; if (hwDoing.answers[i] === it.answer) correct += 1; }
+    });
+    // AI feedback on written answers — encouraging, never a grade
+    let feedback = [];
+    const opens = items.map((it, i) => ({ it, i })).filter((x) => x.it.type === "open" && (hwDoing.answers[x.i] || "").trim());
+    if (opens.length) {
+      try {
+        const text = await askTool(`A beginner reader answered written questions about "${classroom.book}". For each, write ONE encouraging sentence of feedback: name something specific they did well, and if useful add a gentle nudge. Never grade, never say wrong.\n\n${opens.map((x, k) => `${k + 1}. Question: ${x.it.q}\nWhat a good answer includes: ${x.it.lookFor || "any thoughtful response"}\nTheir answer: ${hwDoing.answers[x.i]}`).join("\n\n")}\n\nRespond with ONLY a JSON array of strings, one per question, in order.`, 700);
+        feedback = JSON.parse(text.replace(/\u0060\u0060\u0060json|\u0060\u0060\u0060/g, "").trim());
+      } catch { feedback = opens.map(() => "Thanks for writing this out — your teacher will read it."); }
+    }
+    const earned = correct * 5 + opens.length * 5;
+    const submission = {
+      hwId: hwDoing.id, answers: hwDoing.answers, correct, mcCount,
+      written: opens.map((x, k) => ({ q: x.it.q, a: hwDoing.answers[x.i], fb: feedback[k] || "" })),
+      at: Date.now(),
+    };
+    const subs = { ...(classroom.homeworkDone || {}), [hwDoing.id]: submission };
+    persist({ classroom: { ...classroom, homeworkDone: subs }, points: points + earned, readLog: logActivity({ qz: 1 }) });
+    setHwDoing({ ...hwDoing, grading: false, done: true, correct, mcCount, earned, feedback, opens });
+    if (!mcCount || correct >= mcCount - 1) celebrate();
+    try {
+      const wk = (latestRef.current.readLog || []).slice(-7).reduce((a, x) => a + (x.min || 0), 0);
+      await publishClassProgress(classroom.code, {
+        name: classroom.name, chapter: classroom.chapter, quizzes: classroom.quizzes || {},
+        homeworkDone: subs, minWeek: wk, wcpm: (latestRef.current.fluency || []).slice(-1)[0]?.wcpm || 0, updatedAt: Date.now(),
+      });
+    } catch { /* syncs next time */ }
+  };
+
   // ----- Assignments: "read ch. 3 by Friday" -----
   const saveAssignment = async () => {
     const ch = parseInt(assignForm.chapter);
@@ -1204,7 +1320,7 @@ export default function ShelfLife() {
     if (tab !== "classroom" || !classroom?.code) return;
     fetchClassRecord(classroom.code).then((cls) => {
       if (!cls) return;
-      setClassroom((prev) => (prev ? { ...prev, book: cls.book, bookAuthor: cls.bookAuthor, chapters: cls.chapters, rewards: cls.rewards || [], teacher: cls.teacher, className: cls.className, notice: cls.notice || "", assignments: cls.assignments || [] } : prev));
+      setClassroom((prev) => (prev ? { ...prev, book: cls.book, bookAuthor: cls.bookAuthor, chapters: cls.chapters, rewards: cls.rewards || [], teacher: cls.teacher, className: cls.className, notice: cls.notice || "", assignments: cls.assignments || [], homework: cls.homework || [] } : prev));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -2430,9 +2546,12 @@ Respond with ONLY a JSON object, no markdown:
       {/* Header */}
       <header style={{ maxWidth: 880, margin: "0 auto", padding: "28px 18px 6px" }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-          <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: "clamp(30px, 6vw, 44px)", margin: 0, letterSpacing: "-0.02em" }}>
-            Shelf Life
-          </h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Mark size={44} />
+            <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: "clamp(30px, 6vw, 44px)", margin: 0, letterSpacing: "-0.02em" }}>
+              Shelf Life
+            </h1>
+          </div>
           <div style={{
             border: `2px solid ${T.stamp}`, color: T.stamp, borderRadius: 6, padding: "3px 10px",
             fontWeight: 700, fontSize: 12, letterSpacing: "0.12em", transform: "rotate(-2deg)",
@@ -2442,7 +2561,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v34</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v36</span>
         </p>
       </header>
 
@@ -4013,8 +4132,9 @@ Respond with ONLY a JSON object, no markdown:
                 </div>
 
                 {/* Class switcher — one row per class this teacher runs */}
-                {(classes || []).length > 1 && (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                {(classes || []).length >= 1 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+                    {classes.length > 1 && <span style={{ fontSize: 11.5, color: T.inkSoft, fontWeight: 700 }}>MY CLASSES:</span>}
                     {classes.map((c) => (
                       <button key={c.code} onClick={() => switchClass(c.code)} style={{
                         padding: "6px 14px", borderRadius: 999, fontSize: 13, cursor: "pointer", fontWeight: 700,
@@ -4035,7 +4155,7 @@ Respond with ONLY a JSON object, no markdown:
 
                 {/* Calm sub-navigation: one job per pane */}
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 14, borderBottom: `2px solid ${T.rule}`, paddingBottom: 8 }}>
-                  {[["readers", "👀 Readers"], ["assign", "📋 Assign"], ["toolkit", "🧰 Toolkit"], ["rewards", "🎁 Rewards"]].map(([k, label]) => (
+                  {[["home", "🏠 Start here"], ["readers", "👀 My readers"], ["assign", "📋 Homework"], ["toolkit", "🧰 Do it for me"], ["rewards", "🎁 Rewards"]].map(([k, label]) => (
                     <button key={k} onClick={() => setTPane(k)} style={{
                       padding: "7px 14px", borderRadius: 8, fontSize: 13.5, cursor: "pointer", fontWeight: 700,
                       border: "none", background: tPane === k ? "#DDE8F6" : "transparent",
@@ -4045,6 +4165,61 @@ Respond with ONLY a JSON object, no markdown:
                     </button>
                   ))}
                 </div>
+
+                {/* START HERE — the one screen that answers "what do I do?" */}
+                {tPane === "home" && (() => {
+                  const r = roster || [];
+                  const weekAgo = Date.now() - 7 * 86400000;
+                  const stuck = r.filter((x) => (x.chapter || 0) === 0 || (x.updatedAt || 0) < weekAgo);
+                  const quizWeek = r.reduce((a, x) => a + Object.values(x.quizzes || {}).filter((q) => q.at > weekAgo && q.passed).length, 0);
+                  const nextDue = (teaching.assignments || []).find((a) => new Date(a.due + "T23:59:59") >= new Date());
+                  return (
+                    <div>
+                      {/* Needs your attention */}
+                      <div style={{ background: "#F5F8FC", border: `2px solid ${T.blue}`, borderRadius: 12, padding: "14px 17px", marginBottom: 14 }}>
+                        <div style={{ fontSize: 11, letterSpacing: "0.13em", color: T.blue, fontWeight: 700 }}>NEEDS YOU THIS WEEK</div>
+                        {r.length === 0 ? (
+                          <div style={{ fontSize: 14.5, marginTop: 4 }}>
+                            No readers yet. Share your class code <strong>{teaching.code}</strong> with your students — they tap Classroom → I'm a student.
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 14.5, marginTop: 4 }}>
+                            {stuck.length > 0
+                              ? <>💛 <strong>{stuck.length}</strong> reader{stuck.length !== 1 ? "s" : ""} haven't read this week: {stuck.slice(0, 4).map((x) => x.name).join(", ")}{stuck.length > 4 ? "…" : ""}</>
+                              : <>🎉 Everyone has read this week. {quizWeek} chapter check{quizWeek !== 1 ? "s" : ""} passed.</>}
+                            {nextDue && <div style={{ marginTop: 4 }}>📋 Next due: chapter {nextDue.chapter}, {dueLabel(nextDue.due).text}</div>}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Plain-language actions — each says what it DOES, not what it's called */}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 10 }}>
+                        {[
+                          ["📝", "Assign reading homework", "Pick a chapter and a due date. Students do it in the app; it grades itself.", () => setTPane("assign"), T.green],
+                          ["👀", "See who's where", "Every reader's chapter, quiz scores and read-aloud pace. Alphabetical, never ranked.", () => setTPane("readers"), T.blue],
+                          ["👥", "Make my small groups", "One tap. Built from real reading data, grouped by what they need.", () => { setTPane("toolkit"); makeGroups(); }, T.blue],
+                          ["💬", "Plan tomorrow's discussion", "Warm-up, four questions and a debate prompt for your book.", () => { setTPane("toolkit"); makeDiscussion(Math.max(1, Math.round(r.reduce((a, x) => a + (x.chapter || 0), 0) / Math.max(1, r.length)) || 1)); }, T.blue],
+                          ["📄", "Print a progress report", "A one-page report for a principal or a parent conference.", () => setReport("class"), T.stamp],
+                          ["🎁", "Set up a class reward", "Pizza party, movie night, a bookstore coupon — you choose.", () => setTPane("rewards"), T.stamp],
+                        ].map(([emoji, title, desc, onClick, color]) => (
+                          <button key={title} onClick={onClick} style={{
+                            background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: 12,
+                            padding: "14px 16px", cursor: "pointer", textAlign: "left",
+                            fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                          }}>
+                            <div style={{ fontSize: 22 }}>{emoji}</div>
+                            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 16, color, marginTop: 2 }}>{title}</div>
+                            <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 2 }}>{desc}</div>
+                          </button>
+                        ))}
+                      </div>
+
+                      <p style={{ fontSize: 12, color: T.inkSoft, marginTop: 14, textAlign: "center" }}>
+                        Everything else lives in the tabs above — nothing is hidden, you just don't have to look at it.
+                      </p>
+                    </div>
+                  );
+                })()}
 
                 {tPane === "readers" && roster && roster.length > 0 && (() => {
                   const avgCh = (roster.reduce((a, x) => a + (x.chapter || 0), 0) / roster.length).toFixed(1);
@@ -4191,6 +4366,128 @@ Respond with ONLY a JSON object, no markdown:
                 {(tPane === "assign" || tPane === "toolkit") && (
                 <div style={{ marginTop: 4 }}>
                   {tPane === "assign" && (<>
+                  {/* Homework builder */}
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 19 }}>📝 Reading homework</div>
+                    <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "2px 0 10px" }}>
+                      You pick the chapter — we write it, your students do it in the app, and it grades itself.
+                      Nothing gets posted until you read it and approve it.
+                    </p>
+
+                    {(teaching.homework || []).map((h) => {
+                      const done = (roster || []).filter((r) => (r.homeworkDone || {})[h.id]).length;
+                      const d = h.due ? dueLabel(h.due) : null;
+                      return (
+                        <div key={h.id} style={{ border: `1px solid ${T.rule}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8, background: T.paper }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                            <div>
+                              <strong>{h.title}</strong>
+                              <div style={{ fontSize: 12.5, color: d?.late ? T.stamp : T.inkSoft }}>
+                                Chapter {h.chapter} · {h.items.length} questions{d ? ` · due ${d.text}` : ""}
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              <span style={{ fontSize: 12.5, fontWeight: 700, color: (roster || []).length && done === roster.length ? T.green : T.ink }}>
+                                {done}/{(roster || []).length} turned in
+                              </span>
+                              <button style={{ ...ghostBtn, padding: "3px 11px", fontSize: 12 }} onClick={() => setHwResults(hwResults?.id === h.id ? null : h)}>
+                                {hwResults?.id === h.id ? "Hide" : "See answers"}
+                              </button>
+                              <button aria-label="Remove" style={{ background: "none", border: "none", color: T.stamp, cursor: "pointer", fontSize: 15 }} onClick={() => deleteHomework(h.id)}>✕</button>
+                            </div>
+                          </div>
+
+                          {hwResults?.id === h.id && (
+                            <div style={{ marginTop: 10, borderTop: `1px solid ${T.rule}`, paddingTop: 8 }}>
+                              {(roster || []).length === 0 && <div style={{ fontSize: 13, color: T.inkSoft }}>No readers yet.</div>}
+                              {(roster || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((st) => {
+                                const sub = (st.homeworkDone || {})[h.id];
+                                return (
+                                  <div key={st.name} style={{ padding: "7px 0", borderBottom: `1px solid ${T.rule}` }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                                      <strong style={{ fontSize: 14 }}>{st.name}</strong>
+                                      <span style={{ fontSize: 12.5, color: sub ? T.green : T.inkSoft }}>
+                                        {sub ? (sub.mcCount ? `${sub.correct}/${sub.mcCount} correct` : "turned in ✓") : "not yet"}
+                                      </span>
+                                    </div>
+                                    {(sub?.written || []).map((w, wi) => (
+                                      <div key={wi} style={{ fontSize: 12.5, marginTop: 4, background: "#F5F8FC", borderLeft: `3px solid ${T.blue}`, padding: "5px 9px", borderRadius: 4 }}>
+                                        <div style={{ color: T.inkSoft }}>{w.q}</div>
+                                        <div style={{ marginTop: 2 }}>💬 {w.a}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {!hwShow ? (
+                      <button style={btn(T.green)} onClick={() => setHwShow(true)}>+ Create homework</button>
+                    ) : !hwDraft ? (
+                      <Ruled>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 8 }}>
+                          <input style={input} inputMode="numeric" placeholder="Chapter *" value={hwForm.chapter}
+                            onChange={(e) => setHwForm({ ...hwForm, chapter: e.target.value.replace(/\D/g, "") })} />
+                          <input style={input} type="date" value={hwForm.due} onChange={(e) => setHwForm({ ...hwForm, due: e.target.value })} />
+                          <select style={input} value={hwForm.kind} onChange={(e) => setHwForm({ ...hwForm, kind: e.target.value })}>
+                            <option value="comprehension">What happened & why</option>
+                            <option value="vocabulary">Vocabulary from the chapter</option>
+                            <option value="response">Written response / thinking</option>
+                            <option value="mixed">A mix of everything</option>
+                          </select>
+                          <select style={input} value={hwForm.count} onChange={(e) => setHwForm({ ...hwForm, count: e.target.value })}>
+                            {[3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n} questions</option>)}
+                          </select>
+                        </div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button style={{ ...btn(T.green), opacity: hwForm.chapter ? 1 : 0.5 }} disabled={!hwForm.chapter} onClick={draftHomework}>
+                            Write it for me ✨
+                          </button>
+                          <button style={ghostBtn} onClick={() => setHwShow(false)}>Cancel</button>
+                        </div>
+                      </Ruled>
+                    ) : (
+                      <div style={{ border: `2px solid ${T.blue}`, borderRadius: 12, background: "#F5F8FC", padding: "14px 16px" }}>
+                        {hwDraft.loading ? (
+                          <div style={{ color: T.inkSoft }}>Writing chapter {hwDraft.chapter} homework…</div>
+                        ) : (
+                          <div>
+                            <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.blue, fontWeight: 700 }}>YOUR DRAFT — NOTHING IS POSTED YET</div>
+                            <input style={{ ...input, fontWeight: 700, marginTop: 6 }} value={hwDraft.title}
+                              onChange={(e) => setHwDraft({ ...hwDraft, title: e.target.value })} />
+                            {hwDraft.items.map((it, i) => (
+                              <div key={i} style={{ marginTop: 10, background: T.card, border: `1px solid ${T.rule}`, borderRadius: 8, padding: "9px 12px" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                                  <span style={{ fontSize: 11, color: it.type === "mc" ? T.blue : T.stamp, fontWeight: 700 }}>
+                                    {it.type === "mc" ? "MULTIPLE CHOICE" : "WRITTEN ANSWER"}
+                                  </span>
+                                  <button aria-label="Remove question" style={{ background: "none", border: "none", color: T.stamp, cursor: "pointer", fontSize: 13 }}
+                                    onClick={() => setHwDraft({ ...hwDraft, items: hwDraft.items.filter((_, k) => k !== i) })}>✕</button>
+                                </div>
+                                <textarea style={{ width: "100%", boxSizing: "border-box", border: "none", background: "transparent", fontSize: 14, fontFamily: "'Atkinson Hyperlegible', sans-serif", color: T.ink, resize: "vertical", minHeight: 42, outline: "none" }}
+                                  value={it.q} onChange={(e) => { const items = [...hwDraft.items]; items[i] = { ...it, q: e.target.value }; setHwDraft({ ...hwDraft, items }); }} />
+                                {it.type === "mc" && it.options.map((o, oi) => (
+                                  <div key={oi} style={{ fontSize: 13, paddingLeft: 10, color: oi === it.answer ? T.green : T.inkSoft, fontWeight: oi === it.answer ? 700 : 400 }}>
+                                    {oi === it.answer ? "✓ " : "· "}{o}
+                                  </div>
+                                ))}
+                              </div>
+                            ))}
+                            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                              <button style={btn(T.green)} onClick={publishHomework}>Looks good — post it 📝</button>
+                              <button style={ghostBtn} onClick={draftHomework}>Rewrite it ↻</button>
+                              <button style={ghostBtn} onClick={() => setHwDraft(null)}>Start over</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <button style={{ ...btn(), marginBottom: 12 }} onClick={() => setReport("class")}>
                     📄 Class progress report (print / PDF)
                   </button>
@@ -4534,6 +4831,106 @@ Respond with ONLY a JSON object, no markdown:
                   <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: "28px" }}>
                     Your teacher can see your chapter and quiz scores — that's how they know when to help, not to rank you.
                   </div>
+
+                  {/* Homework from the teacher */}
+                  {(classroom.homework || []).length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.stamp, fontWeight: 700 }}>📝 HOMEWORK</div>
+                      {classroom.homework.map((h) => {
+                        const sub = (classroom.homeworkDone || {})[h.id];
+                        const d = h.due ? dueLabel(h.due) : null;
+                        return (
+                          <div key={h.id} style={{
+                            border: `1.5px solid ${sub ? T.green : d?.late ? T.stamp : T.rule}`,
+                            background: sub ? "#F0F5F0" : T.paper, borderRadius: 10, padding: "10px 14px", marginTop: 6,
+                          }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                              <div>
+                                <strong>{sub ? "✓ " : ""}{h.title}</strong>
+                                <div style={{ fontSize: 12.5, color: sub ? T.green : d?.late ? T.stamp : T.inkSoft }}>
+                                  {sub ? `Turned in${sub.mcCount ? ` · ${sub.correct}/${sub.mcCount} correct` : ""}` : `${h.items.length} questions${d ? ` · due ${d.text}` : ""}`}
+                                </div>
+                              </div>
+                              {!sub && (
+                                <button style={btn(T.green)} onClick={() => setHwDoing({ ...h, answers: [], grading: false, done: false })}>
+                                  Start it
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {hwDoing && (
+                        <div style={{ marginTop: 12, border: `2px solid ${T.blue}`, borderRadius: 12, background: "#F5F8FC", padding: "14px 16px" }}>
+                          {!hwDoing.done ? (
+                            <div>
+                              <strong style={{ fontSize: 16 }}>{hwDoing.title}</strong>
+                              <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "2px 0 8px" }}>
+                                Take your time. Written answers have no wrong response.
+                              </p>
+                              {hwDoing.items.map((it, i) => (
+                                <div key={i} style={{ margin: "12px 0" }}>
+                                  <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 6 }}>{i + 1}. {it.q}</div>
+                                  {it.type === "mc" ? (
+                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 6 }}>
+                                      {it.options.map((o, oi) => (
+                                        <button key={oi}
+                                          onClick={() => { const a = [...hwDoing.answers]; a[i] = oi; setHwDoing({ ...hwDoing, answers: a }); }}
+                                          style={{
+                                            textAlign: "left", padding: "8px 10px", borderRadius: 8, fontSize: 13, cursor: "pointer",
+                                            border: `1.5px solid ${hwDoing.answers[i] === oi ? T.blue : T.rule}`,
+                                            background: hwDoing.answers[i] === oi ? "#DDE8F6" : T.card,
+                                            color: T.ink, fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                                          }}>
+                                          {o}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <textarea
+                                      style={{ width: "100%", boxSizing: "border-box", minHeight: 76, padding: "9px 12px", border: `1.5px solid ${T.rule}`, borderRadius: 8, background: T.card, color: T.ink, fontSize: 14, fontFamily: "'Atkinson Hyperlegible', sans-serif", outline: "none", resize: "vertical" }}
+                                      placeholder="Write what you think — a couple of sentences is plenty."
+                                      maxLength={600}
+                                      value={hwDoing.answers[i] || ""}
+                                      onChange={(e) => { const a = [...hwDoing.answers]; a[i] = e.target.value; setHwDoing({ ...hwDoing, answers: a }); }}
+                                    />
+                                  )}
+                                </div>
+                              ))}
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button
+                                  style={{ ...btn(), opacity: hwDoing.grading || hwDoing.items.some((it, i) => it.type === "mc" && hwDoing.answers[i] === undefined) ? 0.5 : 1 }}
+                                  disabled={hwDoing.grading || hwDoing.items.some((it, i) => it.type === "mc" && hwDoing.answers[i] === undefined)}
+                                  onClick={submitHomework}>
+                                  {hwDoing.grading ? "Checking…" : "Turn it in"}
+                                </button>
+                                <button style={ghostBtn} onClick={() => setHwDoing(null)}>Finish later</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <div style={{ textAlign: "center" }}>
+                                <div style={{ fontSize: 34 }}>{!hwDoing.mcCount || hwDoing.correct >= hwDoing.mcCount - 1 ? "🎉" : "📖"}</div>
+                                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 21 }}>
+                                  {hwDoing.mcCount ? `${hwDoing.correct} / ${hwDoing.mcCount}` : "Turned in!"}
+                                </div>
+                                <div style={{ fontSize: 13.5, margin: "4px 0 8px" }}>+{hwDoing.earned} pts · your teacher can see it now</div>
+                              </div>
+                              {(hwDoing.feedback || []).map((f, k) => (
+                                <div key={k} style={{ fontSize: 13.5, background: "#F0F5F0", borderLeft: `3px solid ${T.green}`, padding: "7px 11px", borderRadius: 4, marginBottom: 6 }}>
+                                  💬 {f}
+                                </div>
+                              ))}
+                              <div style={{ textAlign: "center" }}>
+                                <button style={btn()} onClick={() => setHwDoing(null)}>Done</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {(classroom.assignments || []).length > 0 && (
                     <div style={{ marginTop: 10 }}>
@@ -5369,12 +5766,9 @@ Respond with ONLY a JSON object, no markdown:
           display: "flex", alignItems: "center", justifyContent: "center", padding: 18, overflowY: "auto",
         }}>
           <div style={{ maxWidth: 470, width: "100%", textAlign: "center" }}>
-            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 4, height: 46 }}>
-              {[["#2B5EA7",34],["#C24632",42],["#3E7C59",30],["#D9A03F",38],["#7C5CB0",44],["#B85C8A",33],["#4A8C9E",40]].map(([c,h],i)=>(
-                <div key={i} style={{ width: 16 + (i%3)*4, height: h, background: c, borderRadius: "3px 3px 0 0", boxShadow: "inset -3px 0 rgba(0,0,0,0.18)" }} />
-              ))}
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+              <Mark size={92} />
             </div>
-            <div style={{ height: 9, background: "#8A6B45", borderRadius: 3, boxShadow: "0 3px 0 #6E5334", margin: "0 40px 18px" }} />
 
             <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 34, margin: 0 }}>Shelf Life</h1>
             <p style={{ fontFamily: "'Fraunces', serif", fontStyle: "italic", fontSize: 17, color: T.blue, margin: "6px 0 2px" }}>
