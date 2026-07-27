@@ -16,6 +16,97 @@ const T = {
 };
 const SPINES = ["#2B5EA7", "#C24632", "#3E7C59", "#D9A03F", "#7C5CB0", "#B85C8A", "#4A8C9E"];
 
+// ---------- Grade levels: one app, very different classrooms ----------
+const GRADES = {
+  prek: {
+    label: "Pre-K (ages 3–4)", short: "Pre-K",
+    unit: "read-together", units: "read-togethers", Unit: "Read-together",
+    // Pre-K best practice is no traditional homework — everything is a shared activity
+    homeworkFor: "family",
+    hwKinds: {
+      readtogether: "a short read-together activity a grown-up does WITH the child",
+      letters: "a playful letter-and-sound hunt around the house",
+      talk: "two simple talk-about-it questions to ask after reading",
+    },
+    ai: "The child is 3–4 years old and CANNOT read independently. They are read TO. Never ask them to read or write. Address the grown-up. Activities must take under 10 minutes, use only things found at home, and feel like play. Use very simple words.",
+    quizAi: "Ask 3 spoken listening questions a grown-up reads aloud to a 3–4 year old about a story they just heard. One sentence each, concrete, about what happened or how someone felt.",
+    wordAi: "Explain this word to a 3-4 year old in one very short sentence using tiny words.",
+  },
+  k2: {
+    label: "Kindergarten – 2nd grade", short: "K–2",
+    unit: "book", units: "books", Unit: "Book",
+    homeworkFor: "both",
+    hwKinds: {
+      readtogether: "a short read-together activity with a grown-up, plus one thing the child does",
+      sight: "sight-word and letter-sound practice using words from the book",
+      comprehension: "3 very simple 'what happened' questions",
+      draw: "a draw-and-tell prompt about the story",
+    },
+    ai: "The reader is 5–8 years old and is just learning to read. Keep every sentence under 12 words. Use only common words. Questions should be concrete — what happened, who did it, how did they feel — never abstract. A grown-up may be reading the questions aloud.",
+    quizAi: "Ask 3 very simple questions for a 5–8 year old about what happened in the story. Short sentences, concrete answers, friendly tone.",
+    wordAi: "Explain this word to a 6 year old in one short, simple sentence.",
+  },
+  g35: {
+    label: "3rd – 5th grade", short: "3–5",
+    unit: "chapter", units: "chapters", Unit: "Chapter",
+    homeworkFor: "student",
+    hwKinds: {
+      comprehension: "what happened and why questions",
+      vocabulary: "vocabulary from this part of the book",
+      response: "short written response prompts asking them to think, predict or connect",
+      mixed: "a mix of comprehension, vocabulary and one written response",
+    },
+    ai: "The reader is 8–11 years old. Friendly and clear. Mix recall with one 'why do you think' question. Keep written answers to a few sentences.",
+    quizAi: "Ask 3 friendly comprehension questions for an 8–11 year old about this chapter.",
+    wordAi: "Explain this word simply for a beginner reader in one sentence.",
+  },
+  g68: {
+    label: "6th – 8th grade", short: "6–8",
+    unit: "chapter", units: "chapters", Unit: "Chapter",
+    homeworkFor: "student",
+    hwKinds: {
+      comprehension: "comprehension and inference questions",
+      vocabulary: "vocabulary in context from this part of the book",
+      response: "written response prompts asking for an opinion backed by a reason",
+      evidence: "questions that require quoting or pointing to specific evidence from the text",
+      mixed: "a mix of comprehension, vocabulary, inference and one written response",
+    },
+    ai: "The reader is 11–14 years old. Do not talk down to them. Include inference and character motivation, not just recall. Ask them to support answers with something from the text.",
+    quizAi: "Ask 3 questions for a middle schooler about this chapter — at least one requiring inference, not just recall.",
+    wordAi: "Define this word clearly in one sentence for a middle school reader.",
+  },
+  g912: {
+    label: "9th – 12th grade", short: "9–12",
+    unit: "chapter", units: "chapters", Unit: "Chapter",
+    homeworkFor: "student",
+    hwKinds: {
+      analysis: "literary analysis — theme, character development, author's craft",
+      evidence: "text-evidence questions requiring a quotation and an explanation",
+      argument: "an argumentative prompt taking a position about the text",
+      vocabulary: "advanced vocabulary in context",
+      mixed: "a mix of analysis, text evidence and one argumentative prompt",
+    },
+    ai: "The reader is a high school student. Write at a genuinely high school level — theme, symbolism, author's craft, narrative choices, historical context. Expect answers of a paragraph or more with textual evidence. Never patronize.",
+    quizAi: "Ask 3 high-school-level questions about this chapter covering theme, character motivation or author's craft — not plot recall.",
+    wordAi: "Define this word precisely in one sentence for a high school reader, noting connotation if it matters.",
+  },
+  adult: {
+    label: "Adult learners / ESL", short: "Adult",
+    unit: "section", units: "sections", Unit: "Section",
+    homeworkFor: "student",
+    hwKinds: {
+      comprehension: "clear comprehension questions",
+      vocabulary: "practical everyday vocabulary from the text",
+      response: "short written response connecting the reading to their own experience",
+      mixed: "a mix of comprehension, vocabulary and a short written response",
+    },
+    ai: "The reader is an adult who is building reading confidence, possibly in a second language. Respect their intelligence completely — simple language, never childish content or tone. Everyday vocabulary. Connect to real life.",
+    quizAi: "Ask 3 clear, respectful comprehension questions for an adult learner building reading confidence. Simple language, adult subject matter.",
+    wordAi: "Define this word in one clear sentence for an adult learning English, with a practical example if it helps.",
+  },
+};
+const lvl = (c) => GRADES[c?.level] || GRADES.g35;
+
 // ---------- Brand mark: open book with a sprout ----------
 function Mark({ size = 64, light = false }) {
   const ink = light ? "#FCF9F0" : "#22334D";
@@ -672,6 +763,7 @@ export default function ShelfLife() {
   const [digitalShelf, setDigitalShelf] = useState([]); // [{gid, title, author, pos}]
   const [reader, setReader] = useState(null); // {gid, title, author, pages, page, loading}
   const [readerFont, setReaderFont] = useState(17);
+  const [tapMode, setTapMode] = useState("define"); // "define" | "read"
   const [wordCard, setWordCard] = useState(null); // {word, loading, phonetic, pos, definition, notFound}
   const [myWords, setMyWords] = useState([]); // [{word, definition, at}]
   const [voicePref, setVoicePref] = useState("system");
@@ -690,7 +782,7 @@ export default function ShelfLife() {
   const [classroom, setClassroom] = useState(null); // student: {code, name, className, teacher, book, chapters, chapter}
   const [teaching, setTeaching] = useState(null); // teacher: {code, className, teacher, book, chapters}
   const [classMode, setClassMode] = useState(null); // null | "teacher-setup" | "student-join"
-  const [classForm, setClassForm] = useState({ teacher: "", className: "", book: "", chapters: "", kind: "class" });
+  const [classForm, setClassForm] = useState({ teacher: "", className: "", book: "", chapters: "", kind: "class", level: "g35" });
   const [joinForm, setJoinForm] = useState({ code: "", name: "" });
   const [roster, setRoster] = useState(null);
   const [rosterLoading, setRosterLoading] = useState(false);
@@ -704,6 +796,8 @@ export default function ShelfLife() {
   const [hwShow, setHwShow] = useState(false);
   const [hwDoing, setHwDoing] = useState(null); // student: the homework being worked on
   const [hwResults, setHwResults] = useState(null); // teacher: submissions for one homework
+  const [textForm, setTextForm] = useState({ title: "", body: "" });
+  const [showTextForm, setShowTextForm] = useState(false);
   const [showAssignForm, setShowAssignForm] = useState(false);
   const [report, setReport] = useState(null); // "class" | "me"
   const [tPane, setTPane] = useState("home"); // teacher dashboard pane
@@ -817,6 +911,7 @@ export default function ShelfLife() {
       teacher: classForm.teacher.trim().slice(0, 40),
       className: classForm.className.trim().slice(0, 50),
       kind: classForm.kind === "family" ? "family" : "class",
+      level: classForm.level || "g35",
       book: classForm.book.trim().slice(0, 80),
       bookAuthor: (classForm.bookAuthor || "").trim().slice(0, 40),
       chapters: Math.max(1, Math.min(99, parseInt(classForm.chapters) || 10)),
@@ -1049,7 +1144,7 @@ export default function ShelfLife() {
       return `${r.name}: chapter ${r.chapter || 0}/${teaching.chapters}, ${passed}/${qs.length || 0} quizzes passed${r.wcpm ? `, reads ${r.wcpm} wpm aloud` : ""}${r.minWeek ? `, ${r.minWeek} min this week` : ""}`;
     }).join("\n");
     try {
-      const text = await askTool(`You are helping a teacher form flexible small reading groups for "${teaching.book}" (${teaching.chapters} chapters). Here is the class data:\n${lines}\n\nSuggest 2-4 flexible groups. Every student appears in exactly one group. Never rank students or label anyone "low" or "struggling" — describe the INSTRUCTIONAL NEED instead (e.g. "needs a check-in on pace", "ready for an inference mini-lesson", "ready to stretch"). Give each group a warm name, the member names, the need, and one concrete 10-minute activity for that group using this book.\n\nRespond with ONLY JSON, no markdown: [{"name":"...","members":["..."],"need":"...","activity":"..."}]`, 1100);
+      const text = await askTool(`You are helping a teacher of ${lvl(teaching).label} form flexible small reading groups for "${teaching.book}" (${teaching.chapters} ${lvl(teaching).units}). ${lvl(teaching).ai} Here is the class data:\n${lines}\n\nSuggest 2-4 flexible groups. Every student appears in exactly one group. Never rank students or label anyone "low" or "struggling" — describe the INSTRUCTIONAL NEED instead (e.g. "needs a check-in on pace", "ready for an inference mini-lesson", "ready to stretch"). Give each group a warm name, the member names, the need, and one concrete 10-minute activity for that group using this book.\n\nRespond with ONLY JSON, no markdown: [{"name":"...","members":["..."],"need":"...","activity":"..."}]`, 1100);
       setTool({ kind: "groups", loading: false, data: JSON.parse(text.replace(/\`\`\`json|\`\`\`/g, "").trim()) });
     } catch { flash("Couldn't build groups — try again"); setTool(null); }
   };
@@ -1059,7 +1154,8 @@ export default function ShelfLife() {
     if (!teaching) return;
     setTool({ kind: "discuss", loading: true, chapter: n });
     try {
-      const text = await askTool(`Create a ready-to-run book discussion for chapter ${n} of "${teaching.book}"${teaching.bookAuthor ? ` by ${teaching.bookAuthor}` : ""}, for a class of beginner readers. If you're unsure of that exact chapter, base it on the story up to that point. Warm and conversational, not a quiz. Respond with ONLY JSON, no markdown: {"warmup":"a 2-minute opener question anyone can answer","questions":["4 text-dependent discussion questions"],"debate":"one question with no right answer that will split the room","exit":"a one-sentence exit ticket prompt"}`, 900);
+      const dsrc = teaching.customText;
+      const text = await askTool(`Create a ready-to-run discussion ${dsrc ? `about this text:\n"""${dsrc.body.slice(0, 6000)}"""\n` : `for ${lvl(teaching).unit} ${n} of "${teaching.book}"`}${teaching.bookAuthor ? ` by ${teaching.bookAuthor}` : ""}. READER LEVEL: ${lvl(teaching).label}. ${lvl(teaching).ai} If you're unsure of that exact chapter, base it on the story up to that point. Warm and conversational, not a quiz. Respond with ONLY JSON, no markdown: {"warmup":"a 2-minute opener question anyone can answer","questions":["4 text-dependent discussion questions"],"debate":"one question with no right answer that will split the room","exit":"a one-sentence exit ticket prompt"}`, 900);
       setTool({ kind: "discuss", loading: false, chapter: n, data: JSON.parse(text.replace(/\`\`\`json|\`\`\`/g, "").trim()) });
     } catch { flash("Couldn't build the discussion — try again"); setTool(null); }
   };
@@ -1073,7 +1169,7 @@ export default function ShelfLife() {
     if (!ranked.length) { flash("No tapped words yet — this fills in as readers use the reader 📖"); return; }
     setTool({ kind: "vocab", loading: true });
     try {
-      const text = await askTool(`A class reading "${teaching.book}" tapped these words for help while reading (word: how many students): ${ranked.map(([w, c]) => `${w}: ${c}`).join(", ")}. For each word give a kid-friendly one-line meaning and a 1-sentence example using it. Then suggest one 5-minute whole-class warm-up activity using several of these words together. Respond with ONLY JSON, no markdown: {"words":[{"word":"...","meaning":"...","example":"..."}],"warmup":"..."}`, 1100);
+      const text = await askTool(`A ${lvl(teaching).label} class reading "${teaching.book}" tapped these words for help while reading (word: how many students): ${ranked.map(([w, c]) => `${w}: ${c}`).join(", ")}. For each word give a kid-friendly one-line meaning and a 1-sentence example using it. Then suggest one 5-minute whole-class warm-up activity using several of these words together. Respond with ONLY JSON, no markdown: {"words":[{"word":"...","meaning":"...","example":"..."}],"warmup":"..."}`, 1100);
       const data = JSON.parse(text.replace(/\`\`\`json|\`\`\`/g, "").trim());
       setTool({ kind: "vocab", loading: false, data, counts: Object.fromEntries(ranked) });
     } catch { flash("Couldn't build the vocabulary report — try again"); setTool(null); }
@@ -1132,13 +1228,30 @@ export default function ShelfLife() {
     catch { flash("Couldn't save the note"); }
   };
 
-  // ----- Homework: AI drafts it, the TEACHER approves it, the app grades it -----
-  const HW_KINDS = {
-    comprehension: "reading comprehension questions about what happened and why",
-    vocabulary: "vocabulary questions using words from this part of the book",
-    response: "short written response prompts asking the reader to think, predict or connect",
-    mixed: "a mix of comprehension, vocabulary and one written response",
+  // ----- Any text: a pasted passage, article or primary source becomes a reading -----
+  const saveClassText = async () => {
+    if (!teaching || !textForm.title.trim() || textForm.body.trim().length < 40) return;
+    const updated = {
+      ...teaching,
+      customText: { title: textForm.title.trim().slice(0, 90), body: textForm.body.trim().slice(0, 60000) },
+    };
+    try {
+      await createClassRecord(updated);
+      persist({ teaching: updated });
+      setTextForm({ title: "", body: "" });
+      setShowTextForm(false);
+      flash("Text posted — your readers can open it now 📄");
+    } catch { flash("Couldn't save — try again"); }
   };
+  const removeClassText = async () => {
+    if (!teaching) return;
+    const updated = { ...teaching };
+    delete updated.customText;
+    try { await createClassRecord(updated); persist({ teaching: updated }); } catch { flash("Couldn't remove it"); }
+  };
+
+  // ----- Homework: AI drafts it, the TEACHER approves it, the app grades it -----
+  const hwKindsFor = () => lvl(teaching).hwKinds;
 
   const draftHomework = async () => {
     const ch = parseInt(hwForm.chapter);
@@ -1146,11 +1259,25 @@ export default function ShelfLife() {
     const n = Math.max(2, Math.min(8, parseInt(hwForm.count) || 4));
     setHwDraft({ loading: true, chapter: ch, due: hwForm.due, kind: hwForm.kind });
     try {
-      const text = await askTool(`Create reading homework for chapter ${ch} of "${teaching.book}"${teaching.bookAuthor ? ` by ${teaching.bookAuthor}` : ""} for beginner readers. Focus: ${HW_KINDS[hwForm.kind]}. Make exactly ${n} items. If unsure of that exact chapter, ask about the story up to that point.
+      const L = lvl(teaching);
+      const kinds = L.hwKinds;
+      const audience = L.homeworkFor === "family"
+        ? "This is written FOR THE GROWN-UP to do with the child, not for the child to complete alone."
+        : L.homeworkFor === "both"
+        ? "A grown-up may read the questions aloud. Keep instructions simple enough for either to follow."
+        : "The student completes this independently.";
+      const src = teaching.customText;
+      const excerpt = src ? `\n\nTHE TEXT ITSELF (base every question on this):\n"""${src.body.slice(0, 6000)}"""\n` : "";
+      const text = await askTool(`Create reading homework ${src ? `about "${src.title}"` : `for ${L.unit} ${ch} of "${teaching.book}"`}${excerpt}${teaching.bookAuthor ? ` by ${teaching.bookAuthor}` : ""}.
 
-Each item is either type "mc" (4 options, one correct) or type "open" (a short written answer, no single right answer). For every "open" item include a short "lookFor" note describing what a good answer contains, used only for feedback.
+READER LEVEL: ${L.label}. ${L.ai}
+${audience}
+FOCUS: ${kinds[hwForm.kind] || Object.values(kinds)[0]}
+Make exactly ${n} items. If unsure of that exact ${L.unit}, ask about the story up to that point.
 
-Warm and encouraging, never like a test. Respond with ONLY JSON, no markdown:
+Each item is either type "mc" (4 options, one correct) or type "open" (a written answer, no single right answer). For every "open" item include a short "lookFor" note describing what a good answer contains, used only for feedback.
+
+Respond with ONLY JSON, no markdown:
 {"title":"short homework title","items":[{"type":"mc","q":"...","options":["..","..","..",".."],"answer":0},{"type":"open","q":"...","lookFor":"..."}]}`, 1200);
       const parsed = JSON.parse(text.replace(/\u0060\u0060\u0060json|\u0060\u0060\u0060/g, "").trim());
       if (!parsed?.items?.length) throw new Error("bad");
@@ -1161,11 +1288,30 @@ Warm and encouraging, never like a test. Respond with ONLY JSON, no markdown:
     }
   };
 
+  const blankHomework = () => {
+    const ch = parseInt(hwForm.chapter) || 1;
+    setHwDraft({
+      loading: false, chapter: ch, due: hwForm.due, kind: "custom", mine: true,
+      title: `${lvl(teaching).Unit} ${ch} homework`,
+      items: [{ type: "open", q: "", lookFor: "" }],
+    });
+  };
+
+  const addHwItem = (type) => {
+    if (!hwDraft) return;
+    const item = type === "mc"
+      ? { type: "mc", q: "", options: ["", "", "", ""], answer: 0 }
+      : { type: "open", q: "", lookFor: "" };
+    setHwDraft({ ...hwDraft, items: [...hwDraft.items, item] });
+  };
+
   const publishHomework = async () => {
     if (!teaching || !hwDraft?.items) return;
+    const clean = hwDraft.items.filter((it) => (it.q || "").trim() && (it.type !== "mc" || it.options.every((o) => (o || "").trim())));
+    if (!clean.length) { flash("Add at least one question with text first"); return; }
     const hw = {
       id: uid(), chapter: hwDraft.chapter, due: hwDraft.due || "",
-      title: hwDraft.title, items: hwDraft.items, at: Date.now(),
+      title: hwDraft.title, items: clean, at: Date.now(),
     };
     const updated = { ...teaching, homework: [...(teaching.homework || []), hw] };
     try {
@@ -1274,7 +1420,7 @@ Warm and encouraging, never like a test. Respond with ONLY JSON, no markdown:
     if (quizBank[n]?.questions) { setQuizBank((qb) => ({ ...qb, [n]: { ...qb[n], isOpen: !qb[n].isOpen } })); return; }
     setQuizBank((qb) => ({ ...qb, [n]: { loading: true, isOpen: true } }));
     try {
-      const pack = await getClassQuiz(teaching.code, teaching.book, n);
+      const pack = await getClassQuiz(teaching.code, teaching.book, n, teaching.customText?.body);
       setQuizBank((qb) => ({ ...qb, [n]: { questions: pack.mc, open: pack.open, isOpen: true, loading: false } }));
     } catch {
       setQuizBank((qb) => ({ ...qb, [n]: { loading: false, isOpen: false } }));
@@ -1320,14 +1466,14 @@ Warm and encouraging, never like a test. Respond with ONLY JSON, no markdown:
     if (tab !== "classroom" || !classroom?.code) return;
     fetchClassRecord(classroom.code).then((cls) => {
       if (!cls) return;
-      setClassroom((prev) => (prev ? { ...prev, book: cls.book, bookAuthor: cls.bookAuthor, chapters: cls.chapters, rewards: cls.rewards || [], teacher: cls.teacher, className: cls.className, notice: cls.notice || "", assignments: cls.assignments || [], homework: cls.homework || [] } : prev));
+      setClassroom((prev) => (prev ? { ...prev, book: cls.book, bookAuthor: cls.bookAuthor, chapters: cls.chapters, rewards: cls.rewards || [], teacher: cls.teacher, className: cls.className, notice: cls.notice || "", assignments: cls.assignments || [], homework: cls.homework || [], level: cls.level || "g35", customText: cls.customText || null } : prev));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   // ----- Chapter quizzes (AI-generated per chapter; teacher sees the scores) -----
   // One quiz per chapter, shared by the whole class — every student gets the SAME questions
-  const getClassQuiz = async (code, book, n) => {
+  const getClassQuiz = async (code, book, n, srcText) => {
     try {
       const r = await storage.get(`cq:${code}:${n}`, true);
       const cached = JSON.parse(r.value);
@@ -1342,7 +1488,7 @@ Warm and encouraging, never like a test. Respond with ONLY JSON, no markdown:
         max_tokens: 700,
         messages: [{
           role: "user",
-          content: `Create a short reading check for chapter ${n} of the book "${book}" for a young reader who just finished that chapter. Friendly tone, not a test. If you are not confident about that exact chapter's contents, ask about the story up to that point that anyone who has read through chapter ${n} could answer.
+          content: `${srcText ? `Create a short reading check about this text:\n"""${String(srcText).slice(0, 6000)}"""\n` : `Create a short reading check for ${lvl(teaching || classroom).unit} ${n} of the book "${book}".`} READER LEVEL: ${lvl(teaching || classroom).label}. ${lvl(teaching || classroom).quizAi} ${lvl(teaching || classroom).ai} Friendly tone, not a test. If you are not confident about that exact chapter's contents, ask about the story up to that point that anyone who has read through chapter ${n} could answer.
 
 Include exactly 3 multiple-choice questions (4 options each, one correct) AND exactly 1 open-ended thinking question that asks the reader to infer, predict, connect, or give an opinion with a reason (for example "Why do you think..." or "What would you have done...?"). There is no wrong answer to the thinking question.
 
@@ -1368,7 +1514,7 @@ Respond with ONLY a JSON object, no markdown:
     if (!classroom) return;
     setChapQuiz({ chapter: n, loading: true, questions: null, answers: [], submitted: false });
     try {
-      const pack = await getClassQuiz(classroom.code, classroom.book, n);
+      const pack = await getClassQuiz(classroom.code, classroom.book, n, classroom.customText?.body);
       setChapQuiz((prev) => prev && { ...prev, loading: false, questions: pack.mc, openQ: pack.open, openAns: "" });
     } catch {
       flash("Couldn't load the chapter quiz — try again in a moment 🧠");
@@ -1901,6 +2047,36 @@ Respond with ONLY a JSON object, no markdown:
   };
   const stopListening = () => { try { window.__slRec?.stop(); } catch { /* noop */ } };
 
+  // ----- Sentences: tap one to hear the page from there, and remember the spot -----
+  const sentenceAt = (page, charIdx) => {
+    const re = /[^.!?\u2026]*[.!?\u2026]+["'\u201d\u2019)\]]*\s*|[^.!?\u2026]+$/g;
+    let m;
+    while ((m = re.exec(page)) !== null) {
+      const start = m.index, end = start + m[0].length;
+      if (charIdx >= start && charIdx < end) return { start, end };
+      if (start > charIdx) break;
+    }
+    return { start: charIdx, end: page.length };
+  };
+
+  const saveMark = (charIdx) => {
+    if (!reader) return;
+    const mark = { page: reader.page, char: charIdx };
+    setReader((r) => r && { ...r, mark });
+    persist({
+      digitalShelf: (latestRef.current.digitalShelf || []).map((x) =>
+        x.gid === reader.gid ? { ...x, pos: reader.page, mark } : x),
+    });
+  };
+
+  const readFromHere = (charIdx) => {
+    if (!reader?.pages?.length) return;
+    const page = reader.pages[reader.page];
+    const { start } = sentenceAt(page, charIdx);
+    saveMark(start);
+    speakRange(start, page.length);
+  };
+
   // ----- Word helper: tap a word to hear it and see its meaning -----
   const speakWord = (word) => {
     try {
@@ -1968,7 +2144,7 @@ Respond with ONLY a JSON object, no markdown:
           max_tokens: 150,
           messages: [{
             role: "user",
-            content: `In ONE short, simple sentence, explain the word "${word}" for a beginner reader. If it is a Spanish word, explain it in simple Spanish. If it looks like a name or a made-up word from a story, briefly say so. Respond with only that one sentence — no preamble, no quotes.`,
+            content: `${classroom ? lvl(classroom).wordAi : "In ONE short, simple sentence, explain the word for a beginner reader."} The word is "${word}". If it is a Spanish word, explain it in simple Spanish. If it looks like a name or a made-up word from a story, briefly say so. Respond with only that one sentence — no preamble, no quotes.`,
           }],
         }),
       });
@@ -1982,6 +2158,35 @@ Respond with ONLY a JSON object, no markdown:
     } catch { /* fall through */ }
 
     setWordCard({ word, notFound: true, loading: false });
+  };
+
+  // Paginate any raw text into reader pages
+  const paginate = (text) => {
+    const pages = [];
+    let i = 0;
+    while (i < text.length) {
+      let end = Math.min(i + 1600, text.length);
+      if (end < text.length) {
+        const brk = text.lastIndexOf("\n", end);
+        const sp = text.lastIndexOf(" ", end);
+        end = Math.max(brk, sp) > i + 800 ? Math.max(brk, sp) : end;
+      }
+      pages.push(text.slice(i, end));
+      i = end;
+    }
+    return pages.length ? pages : [text];
+  };
+
+  // Open the reader on a pasted passage / article instead of a book
+  const openTextReader = (title, author, body, gid) => {
+    window.__slReadStart = Date.now();
+    const pages = paginate(body);
+    const saved = gid ? digitalShelf.find((x) => x.gid === gid) : null;
+    setReader({
+      gid: gid || `text:${title}`, title, author: author || "",
+      loading: false, pages, page: Math.min(saved?.pos || 0, pages.length - 1),
+      mark: saved?.mark || null, isText: true,
+    });
   };
 
   const openReader = async (item) => {
@@ -2005,7 +2210,8 @@ Respond with ONLY a JSON object, no markdown:
         pages.push(text.slice(i, end));
         i = end;
       }
-      setReader((prev) => prev && { ...prev, loading: false, pages, page: Math.min(prev.page, pages.length - 1) });
+      const savedMark = (latestRef.current.digitalShelf || []).find((x) => x.gid === item.gid)?.mark || null;
+      setReader((prev) => prev && { ...prev, loading: false, pages, page: Math.min(prev.page, pages.length - 1), mark: savedMark });
     } catch {
       flash("Couldn't open that book — try another");
       setReader(null);
@@ -2561,7 +2767,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v36</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v38</span>
         </p>
       </header>
 
@@ -3955,6 +4161,31 @@ Respond with ONLY a JSON object, no markdown:
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 10 }}>
                   <input style={input} placeholder={classForm.kind === "family" ? "Your name * (e.g. Mom, Papá Luis)" : "Your name * (e.g. Ms. Rivera)"} maxLength={40} value={classForm.teacher}
                     onChange={(e) => setClassForm({ ...classForm, teacher: e.target.value })} />
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 5 }}>Who are your readers?</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {Object.entries(GRADES).map(([k, g]) => (
+                        <button key={k} type="button" onClick={() => setClassForm({ ...classForm, level: k })} style={{
+                          padding: "6px 13px", borderRadius: 999, fontSize: 12.5, cursor: "pointer", fontWeight: 700,
+                          border: `1.5px solid ${classForm.level === k ? T.blue : T.rule}`,
+                          background: classForm.level === k ? T.blue : "transparent",
+                          color: classForm.level === k ? "#FFF" : T.ink,
+                          fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                        }}>
+                          {g.short}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 4 }}>
+                      {lvl(classForm).label} — {classForm.level === "prek"
+                        ? "activities go to the grown-up; nothing asks a child to read alone"
+                        : classForm.level === "g912"
+                        ? "analysis, text evidence and argument — no baby talk"
+                        : classForm.level === "adult"
+                        ? "simple language, adult subject matter, never childish"
+                        : `questions, homework and word help are written for ${lvl(classForm).short} readers`}
+                    </div>
+                  </div>
                   <input style={input} placeholder={classForm.kind === "family" ? "Family name * (e.g. The Mondragóns)" : "Class name * (e.g. Period 3 ELA)"} maxLength={50} value={classForm.className}
                     onChange={(e) => setClassForm({ ...classForm, className: e.target.value })} />
                   <BookTitleInput
@@ -3964,7 +4195,7 @@ Respond with ONLY a JSON object, no markdown:
                     onPick={(b) => { setClassForm((f) => ({ ...f, book: b.title, bookAuthor: b.author || "" })); estimateChapters(b.title, b.author || ""); }}
                   />
                   <div>
-                    <input style={input} placeholder="Number of chapters" inputMode="numeric" value={classForm.chapters}
+                    <input style={input} placeholder={`Number of ${lvl(classForm).units}`} inputMode="numeric" value={classForm.chapters}
                       onChange={(e) => { setChapGuess(""); setClassForm({ ...classForm, chapters: e.target.value.replace(/\D/g, "") }); }} />
                     {chapGuess === "loading" && <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 3 }}>Counting chapters for you…</div>}
                     {chapGuess === "done" && <div style={{ fontSize: 11, color: T.green, marginTop: 3 }}>✓ Filled in automatically — adjust if your edition differs</div>}
@@ -4370,8 +4601,9 @@ Respond with ONLY a JSON object, no markdown:
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 19 }}>📝 Reading homework</div>
                     <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "2px 0 10px" }}>
-                      You pick the chapter — we write it, your students do it in the app, and it grades itself.
-                      Nothing gets posted until you read it and approve it.
+                      You pick the {lvl(teaching).unit} — we write it for <strong>{lvl(teaching).label}</strong>, and it grades itself.
+                      {lvl(teaching).homeworkFor === "family" ? " Activities are written for a grown-up to do with the child." : ""}
+                      {" "}Nothing gets posted until you read it and approve it.
                     </p>
 
                     {(teaching.homework || []).map((h) => {
@@ -4383,7 +4615,7 @@ Respond with ONLY a JSON object, no markdown:
                             <div>
                               <strong>{h.title}</strong>
                               <div style={{ fontSize: 12.5, color: d?.late ? T.stamp : T.inkSoft }}>
-                                Chapter {h.chapter} · {h.items.length} questions{d ? ` · due ${d.text}` : ""}
+                                {lvl(teaching).Unit} {h.chapter} · {h.items.length} questions{d ? ` · due ${d.text}` : ""}
                               </div>
                             </div>
                             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -4430,14 +4662,18 @@ Respond with ONLY a JSON object, no markdown:
                     ) : !hwDraft ? (
                       <Ruled>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 8 }}>
-                          <input style={input} inputMode="numeric" placeholder="Chapter *" value={hwForm.chapter}
+                          <input style={input} inputMode="numeric" placeholder={`${lvl(teaching).Unit} *`} value={hwForm.chapter}
                             onChange={(e) => setHwForm({ ...hwForm, chapter: e.target.value.replace(/\D/g, "") })} />
                           <input style={input} type="date" value={hwForm.due} onChange={(e) => setHwForm({ ...hwForm, due: e.target.value })} />
                           <select style={input} value={hwForm.kind} onChange={(e) => setHwForm({ ...hwForm, kind: e.target.value })}>
-                            <option value="comprehension">What happened & why</option>
-                            <option value="vocabulary">Vocabulary from the chapter</option>
-                            <option value="response">Written response / thinking</option>
-                            <option value="mixed">A mix of everything</option>
+                            {Object.keys(lvl(teaching).hwKinds).map((k) => (
+                              <option key={k} value={k}>{({
+                                readtogether: "Read together at home", letters: "Letter & sound hunt", talk: "Talk about it",
+                                sight: "Sight words & sounds", comprehension: "What happened & why", draw: "Draw and tell",
+                                vocabulary: "Vocabulary", response: "Written response", evidence: "Text evidence",
+                                analysis: "Literary analysis", argument: "Argument / take a position", mixed: "A mix of everything",
+                              })[k] || k}</option>
+                            ))}
                           </select>
                           <select style={input} value={hwForm.count} onChange={(e) => setHwForm({ ...hwForm, count: e.target.value })}>
                             {[3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n} questions</option>)}
@@ -4446,6 +4682,9 @@ Respond with ONLY a JSON object, no markdown:
                         <div style={{ display: "flex", gap: 8 }}>
                           <button style={{ ...btn(T.green), opacity: hwForm.chapter ? 1 : 0.5 }} disabled={!hwForm.chapter} onClick={draftHomework}>
                             Write it for me ✨
+                          </button>
+                          <button style={{ ...ghostBtn, opacity: hwForm.chapter ? 1 : 0.5 }} disabled={!hwForm.chapter} onClick={blankHomework}>
+                            I'll write my own
                           </button>
                           <button style={ghostBtn} onClick={() => setHwShow(false)}>Cancel</button>
                         </div>
@@ -4471,15 +4710,25 @@ Respond with ONLY a JSON object, no markdown:
                                 <textarea style={{ width: "100%", boxSizing: "border-box", border: "none", background: "transparent", fontSize: 14, fontFamily: "'Atkinson Hyperlegible', sans-serif", color: T.ink, resize: "vertical", minHeight: 42, outline: "none" }}
                                   value={it.q} onChange={(e) => { const items = [...hwDraft.items]; items[i] = { ...it, q: e.target.value }; setHwDraft({ ...hwDraft, items }); }} />
                                 {it.type === "mc" && it.options.map((o, oi) => (
-                                  <div key={oi} style={{ fontSize: 13, paddingLeft: 10, color: oi === it.answer ? T.green : T.inkSoft, fontWeight: oi === it.answer ? 700 : 400 }}>
-                                    {oi === it.answer ? "✓ " : "· "}{o}
+                                  <div key={oi} style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 4, marginTop: 3 }}>
+                                    <button title="Mark as the correct answer" onClick={() => { const items = [...hwDraft.items]; items[i] = { ...it, answer: oi }; setHwDraft({ ...hwDraft, items }); }}
+                                      style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: oi === it.answer ? T.green : T.rule, width: 20 }}>
+                                      {oi === it.answer ? "✓" : "○"}
+                                    </button>
+                                    <input value={o} placeholder={`Choice ${oi + 1}`}
+                                      onChange={(e) => { const items = [...hwDraft.items]; const opts = [...it.options]; opts[oi] = e.target.value; items[i] = { ...it, options: opts }; setHwDraft({ ...hwDraft, items }); }}
+                                      style={{ flex: 1, border: "none", borderBottom: `1px solid ${T.rule}`, background: "transparent", fontSize: 13, padding: "3px 2px", color: oi === it.answer ? T.green : T.ink, fontWeight: oi === it.answer ? 700 : 400, fontFamily: "'Atkinson Hyperlegible', sans-serif", outline: "none" }} />
                                   </div>
                                 ))}
                               </div>
                             ))}
-                            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                              <button style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5 }} onClick={() => addHwItem("mc")}>+ Multiple choice</button>
+                              <button style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5 }} onClick={() => addHwItem("open")}>+ Written answer</button>
+                            </div>
+                            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
                               <button style={btn(T.green)} onClick={publishHomework}>Looks good — post it 📝</button>
-                              <button style={ghostBtn} onClick={draftHomework}>Rewrite it ↻</button>
+                              {!hwDraft.mine && <button style={ghostBtn} onClick={draftHomework}>Rewrite it ↻</button>}
                               <button style={ghostBtn} onClick={() => setHwDraft(null)}>Start over</button>
                             </div>
                           </div>
@@ -4529,7 +4778,7 @@ Respond with ONLY a JSON object, no markdown:
                     ) : (
                       <div style={{ paddingTop: 8 }}>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginBottom: 8 }}>
-                          <input style={input} inputMode="numeric" placeholder="Chapter *" value={assignForm.chapter}
+                          <input style={input} inputMode="numeric" placeholder={`${lvl(teaching).Unit} *`} value={assignForm.chapter}
                             onChange={(e) => setAssignForm({ ...assignForm, chapter: e.target.value.replace(/\D/g, "") })} />
                           <input style={input} type="date" value={assignForm.due}
                             onChange={(e) => setAssignForm({ ...assignForm, due: e.target.value })} />
@@ -4652,6 +4901,54 @@ Respond with ONLY a JSON object, no markdown:
                     )}
                   </div>
 
+                  {/* Any text */}
+                  <Ruled style={{ marginBottom: 12 }}>
+                    <div style={{ fontWeight: 700, lineHeight: "28px" }}>📄 Use your own text</div>
+                    <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: "28px" }}>
+                      An article, a primary source, a poem, a science passage — paste it and it becomes a full
+                      Shelf Life reading: tap-a-word, read-aloud, and questions written from the actual text.
+                    </div>
+                    {teaching.customText ? (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "6px 0 4px" }}>
+                        <div>
+                          <strong>{teaching.customText.title}</strong>
+                          <div style={{ fontSize: 12, color: T.inkSoft }}>
+                            {teaching.customText.body.split(/\s+/).length.toLocaleString()} words · your readers see this in Classroom
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12 }}
+                            onClick={() => openTextReader(teaching.customText.title, teaching.teacher, teaching.customText.body)}>
+                            Preview
+                          </button>
+                          <button aria-label="Remove text" style={{ background: "none", border: "none", color: T.stamp, cursor: "pointer", fontSize: 15 }}
+                            onClick={removeClassText}>✕</button>
+                        </div>
+                      </div>
+                    ) : !showTextForm ? (
+                      <button style={{ ...btn(T.green), marginTop: 4 }} onClick={() => setShowTextForm(true)}>+ Paste a text</button>
+                    ) : (
+                      <div style={{ paddingTop: 6 }}>
+                        <input style={{ ...input, marginBottom: 8 }} maxLength={90} placeholder="Title * (e.g. The Gettysburg Address)"
+                          value={textForm.title} onChange={(e) => setTextForm({ ...textForm, title: e.target.value })} />
+                        <textarea
+                          style={{ width: "100%", boxSizing: "border-box", minHeight: 150, padding: "10px 12px", border: `1.5px solid ${T.rule}`, borderRadius: 8, background: T.card, color: T.ink, fontSize: 14, fontFamily: "'Atkinson Hyperlegible', sans-serif", outline: "none", resize: "vertical" }}
+                          placeholder="Paste the passage here…"
+                          value={textForm.body} onChange={(e) => setTextForm({ ...textForm, body: e.target.value })} />
+                        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <button style={{ ...btn(T.green), opacity: textForm.title.trim() && textForm.body.trim().length > 40 ? 1 : 0.5 }}
+                            disabled={!textForm.title.trim() || textForm.body.trim().length <= 40} onClick={saveClassText}>
+                            Post this text
+                          </button>
+                          <button style={ghostBtn} onClick={() => setShowTextForm(false)}>Cancel</button>
+                          <span style={{ fontSize: 11.5, color: T.inkSoft }}>
+                            {textForm.body.trim() ? `${textForm.body.trim().split(/\s+/).length} words` : "at least a short paragraph"}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </Ruled>
+
                   {/* Message to the class */}
                   <Ruled style={{ marginBottom: 12 }}>
                     <div style={{ fontWeight: 700, lineHeight: "28px" }}>📣 Message to your readers</div>
@@ -4668,7 +4965,7 @@ Respond with ONLY a JSON object, no markdown:
 
                   {/* Chapters edit */}
                   <Ruled style={{ marginBottom: 12 }}>
-                    <div style={{ fontWeight: 700, lineHeight: "28px" }}>📖 Book length: {teaching.chapters} chapters</div>
+                    <div style={{ fontWeight: 700, lineHeight: "28px" }}>📖 Book length: {teaching.chapters} {lvl(teaching).units}</div>
                     <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: "28px" }}>
                       Different edition? Update it here — every reader's tracker adjusts instantly.
                     </div>
@@ -4831,6 +5128,22 @@ Respond with ONLY a JSON object, no markdown:
                   <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: "28px" }}>
                     Your teacher can see your chapter and quiz scores — that's how they know when to help, not to rank you.
                   </div>
+
+                  {classroom.customText && (
+                    <div style={{
+                      marginTop: 10, background: T.paper, border: `1.5px solid ${T.blue}`,
+                      borderRadius: 10, padding: "11px 14px", display: "flex",
+                      justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap",
+                    }}>
+                      <div>
+                        <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.blue, fontWeight: 700 }}>📄 CLASS READING</div>
+                        <strong style={{ fontSize: 15.5 }}>{classroom.customText.title}</strong>
+                      </div>
+                      <button style={btn()} onClick={() => openTextReader(classroom.customText.title, classroom.teacher, classroom.customText.body)}>
+                        Open it 📖
+                      </button>
+                    </div>
+                  )}
 
                   {/* Homework from the teacher */}
                   {(classroom.homework || []).length > 0 && (
@@ -5883,6 +6196,11 @@ Respond with ONLY a JSON object, no markdown:
                 onClick={() => (readAlong.on ? stopReadAlong() : startReadAlong())}>
                 {readAlong.on ? "⏹ Stop" : "🔊 Read to me"}
               </button>
+              <button title={tapMode === "define" ? "Tapping a word shows its meaning — tap here to switch" : "Tapping a word reads from there — tap here to switch"}
+                style={{ ...(tapMode === "read" ? btn(T.blue) : ghostBtn), padding: "4px 11px", fontSize: 12.5 }}
+                onClick={() => { stopReadAlong(); setTapMode(tapMode === "define" ? "read" : "define"); flash(tapMode === "define" ? "Tap any sentence to read from there ▶" : "Tap any word for its meaning 💬"); }}>
+                {tapMode === "define" ? "💬 Tap = meaning" : "▶ Tap = read"}
+              </button>
               <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
               <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
               <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
@@ -5896,7 +6214,9 @@ Respond with ONLY a JSON object, no markdown:
             ) : (
               <div>
                 <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", marginBottom: 14 }}>
-                  💡 Tap any word to hear it — tap a 🔊 to hear the whole paragraph
+                  {tapMode === "define"
+                    ? "💡 Tap any word for its meaning · tap a 🔊 to hear a paragraph · your spot is saved as you go"
+                    : "▶ Tap any sentence to start reading aloud from there"}
                 </div>
                 <div style={{ fontSize: readerFont, lineHeight: 1.7, fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
                   {(() => {
@@ -5917,8 +6237,11 @@ Respond with ONLY a JSON object, no markdown:
                         if (!/\S/.test(seg)) return seg;
                         const lit = readAlong.on && readAlong.char >= segStart && readAlong.char < segStart + seg.length;
                         return (
-                          <span key={i} onClick={() => lookupWord(seg)}
-                            style={{ cursor: "pointer", borderRadius: 3, background: lit ? "#FFE9A8" : "transparent", transition: "background .1s" }}>
+                          <span key={i}
+                            onClick={() => { if (tapMode === "read") { readFromHere(segStart); } else { saveMark(segStart); lookupWord(seg); } }}
+                            style={{ cursor: "pointer", borderRadius: 3, transition: "background .1s",
+                              background: lit ? "#FFE9A8"
+                                : (reader.mark && reader.mark.page === reader.page && reader.mark.char >= segStart && reader.mark.char < segStart + seg.length ? "#D8E8FA" : "transparent") }}>
                             {seg}
                           </span>
                         );
@@ -6030,8 +6353,14 @@ Respond with ONLY a JSON object, no markdown:
               padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", borderTop: `1.5px solid ${T.rule}`, background: T.card,
             }}>
               <button style={{ ...ghostBtn, opacity: reader.page === 0 ? 0.4 : 1 }} disabled={reader.page === 0} onClick={() => turnPage(-1)}>← Back</button>
-              <span style={{ fontSize: 12, color: T.inkSoft }}>
+              <span style={{ fontSize: 12, color: T.inkSoft, textAlign: "center" }}>
                 Page {reader.page + 1} of {reader.pages.length} · {Math.round(((reader.page + 1) / reader.pages.length) * 100)}%
+                {reader.mark && reader.mark.page !== reader.page && (
+                  <button style={{ ...ghostBtn, display: "block", margin: "3px auto 0", padding: "2px 10px", fontSize: 11 }}
+                    onClick={() => setReader({ ...reader, page: reader.mark.page })}>
+                    ▸ back to my spot (p. {reader.mark.page + 1})
+                  </button>
+                )}
               </span>
               <button style={{ ...btn(T.green), opacity: reader.page >= reader.pages.length - 1 ? 0.4 : 1 }} disabled={reader.page >= reader.pages.length - 1} onClick={() => turnPage(1)}>Next →</button>
             </div>
