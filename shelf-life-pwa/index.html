@@ -12,8 +12,30 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Shelf Life" />
+
+    <!-- Typefaces. Fraunces = display (characterful, bookish).
+         Atkinson Hyperlegible = body (Braille Institute; best-in-class letter
+         disambiguation, which matters when your users are struggling readers).
+         Lexend = optional reader face; research shows measurable reading-speed
+         gains from its wider inter-character spacing. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700;9..144,900&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Lexend:wght@400;600&display=swap" rel="stylesheet" />
+
+    <style>
+      :root { color-scheme: light; }
+      body { margin:0; background:#F4EEDD;
+             font-family:'Atkinson Hyperlegible', system-ui, sans-serif;
+             -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+      /* Focus ring — quiet, but always visible for keyboard users */
+      :focus-visible { outline:3px solid #2B5EA7; outline-offset:2px; border-radius:4px; }
+      button { font-family:inherit; }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+      }
+    </style>
   </head>
-  <body style="margin:0;background:#F4EEDD">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
