@@ -74,6 +74,12 @@ export default async function handler(req, res) {
     } catch { return res.status(403).json({ error: "Forbidden" }); }
   }
 
+  // Lightweight availability check the app calls once on load
+  if (req.query.check) {
+    res.setHeader("Cache-Control", "public, max-age=300, s-maxage=3600");
+    return res.status(200).json({ available: Boolean(process.env.OPENAI_API_KEY) });
+  }
+
   if (!process.env.OPENAI_API_KEY) {
     return res.status(503).json({ error: "Premium voice not configured" });
   }
