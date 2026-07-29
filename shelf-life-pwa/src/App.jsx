@@ -859,6 +859,7 @@ export default function ShelfLife() {
   const [aiNextLoading, setAiNextLoading] = useState(false);
   const [morePicks, setMorePicks] = useState(null);
   const [morePicksLoading, setMorePicksLoading] = useState(false);
+  const [getBook, setGetBook] = useState(null); // {title, author} — "how do I get this?"
   const [flagged, setFlagged] = useState({}); // resultKey -> true (reader says it isn't free)
   const [subject, setSubject] = useState(null); // browsing a category
   const [blurbs, setBlurbs] = useState({}); // resultKey -> {loading, text}
@@ -898,6 +899,8 @@ export default function ShelfLife() {
   const [readerFont, setReaderFont] = useState(17);
   const [tapMode, setTapMode] = useState("define"); // "define" | "read"
   const [readerFace, setReaderFace] = useState("hyper"); // hyper | lexend | serif
+  const [premiumVoice, setPremiumVoice] = useState(false);
+  const [audioBusy, setAudioBusy] = useState(false);
   const [wordCard, setWordCard] = useState(null); // {word, loading, phonetic, pos, definition, notFound}
   const [myWords, setMyWords] = useState([]); // [{word, definition, at}]
   const [voicePref, setVoicePref] = useState("system");
@@ -2098,6 +2101,12 @@ Respond with ONLY a JSON object, no markdown:
     } catch { /* noop */ }
   };
 
+  const speakRangeStudio = async (from, to) => {
+    if (!premiumVoice || !reader?.pages?.length) return false;
+    const text = reader.pages[reader.page].slice(from, to);
+    return playStudio({ text });
+  };
+
   const speakRange = (start, end) => {
     if (!reader?.pages?.length) return;
     try {
@@ -2122,6 +2131,72 @@ Respond with ONLY a JSON object, no markdown:
       flash("Read-aloud isn't available in this browser");
     }
   };
+  // ----- Premium narration: a studio voice, cached per page so it's paid once -----
+  const stopAudio = () => {
+    const a = window.__slAudio;
+    if (a) { try { a.pause(); a.currentTime = 0; } catch { /* noop */ } }
+    window.__slAudio = null;
+    setAudioBusy(false);
+  };
+
+  // Try the studio voice for any audio the app makes. Returns false if it
+  // can't, so the caller falls back to the device voice.
+  const playStudio = async (opts) => {
+    if (!premiumVoice) return false;
+    try {
+      const v = voicePref === "male" ? "m" : "f";
+      let r;
+      if (opts.word) {
+        r = await fetch(`/api/speak?word=${encodeURIComponent(opts.word)}&voice=${v}`);
+      } else {
+        r = await fetch("/api/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: String(opts.text || "").slice(0, 4000), voice: v }),
+        });
+      }
+      if (!r.ok) return false;
+      const audio = new Audio(URL.createObjectURL(await r.blob()));
+      stopAudio();
+      window.__slAudio = audio;
+      audio.onended = () => { window.__slAudio = null; };
+      await audio.play();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const playPremium = async () => {
+    if (!reader?.pages?.length) return false;
+    // Pasted class texts have no catalogue id — send the page text instead
+    if (reader.isText || String(reader.gid).startsWith("text:")) {
+      setAudioBusy(true);
+      const ok = await playStudio({ text: reader.pages[reader.page] });
+      setAudioBusy(false);
+      if (ok) setReadAlong({ on: true, char: -1 });
+      return ok;
+    }
+    setAudioBusy(true);
+    try {
+      const url = `/api/speak?gid=${encodeURIComponent(reader.gid)}&page=${reader.page}&voice=${voicePref === "male" ? "m" : "f"}`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(String(r.status));
+      const blob = await r.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
+      window.__slAudio = audio;
+      audio.onended = () => { window.__slAudio = null; setAudioBusy(false); setReadAlong({ on: false, char: -1 }); };
+      audio.onerror = () => { setAudioBusy(false); setReadAlong({ on: false, char: -1 }); };
+      setReadAlong({ on: true, char: -1 });
+      await audio.play();
+      return true;
+    } catch {
+      setAudioBusy(false);
+      flash("Studio voice unavailable — using the device voice");
+      return false;
+    }
+  };
+
   const startReadAlong = () => {
     if (!reader?.pages?.length) return;
     speakRange(0, reader.pages[reader.page].length);
@@ -2204,16 +2279,22 @@ Respond with ONLY a JSON object, no markdown:
     });
   };
 
-  const readFromHere = (charIdx) => {
+  const readFromHere = async (charIdx) => {
     if (!reader?.pages?.length) return;
     const page = reader.pages[reader.page];
     const { start } = sentenceAt(page, charIdx);
     saveMark(start);
-    speakRange(start, page.length);
+    const ok = await speakRangeStudio(start, page.length);
+    if (!ok) speakRange(start, page.length);
   };
 
   // ----- Word helper: tap a word to hear it and see its meaning -----
   const speakWord = (word) => {
+    if (premiumVoice) { playStudio({ word }).then((ok) => { if (!ok) deviceSpeakWord(word); }); return; }
+    deviceSpeakWord(word);
+  };
+
+  const deviceSpeakWord = (word) => {
     try {
       const u = new SpeechSynthesisUtterance(word);
       u.lang = /[áéíóúñü]/i.test(word) ? "es-ES" : "en-US";
@@ -2363,6 +2444,7 @@ Respond with ONLY a JSON object, no markdown:
 
   const turnPage = (delta) => {
     if (!reader?.pages?.length) return;
+    stopAudio();
     stopReadAlong();
     const total = reader.pages.length;
     const page = Math.max(0, Math.min(total - 1, reader.page + delta));
@@ -2476,7 +2558,7 @@ Respond with ONLY a JSON object, no markdown:
     setNewsLoading(false);
   };
   useEffect(() => {
-    if (tab === "news") loadReadingRoom();
+    if (tab === "news" || tab === "today") loadReadingRoom();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -2969,7 +3051,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v41</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v43</span>
         </p>
       </header>
 
@@ -3031,6 +3113,23 @@ Respond with ONLY a JSON object, no markdown:
                   “{todaysEncouragement()}”
                 </div>
               </div>
+
+              {/* This month's challenge — the reason to come back */}
+              {newsDigest?.data?.challenge && (
+                <button onClick={() => setTab("news")} style={{
+                  width: "100%", textAlign: "left", cursor: "pointer",
+                  border: `2px dashed ${T.stamp}`, borderRadius: 12, background: "#FDF6EE",
+                  padding: "13px 16px", marginBottom: 12, fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                }}>
+                  <div style={{ fontSize: 11, letterSpacing: "0.13em", color: T.stamp, fontWeight: 700 }}>
+                    ✨ THIS MONTH'S CHALLENGE
+                  </div>
+                  <div style={{ fontSize: 15, marginTop: 3, color: T.ink }}>{newsDigest.data.challenge}</div>
+                  <div style={{ fontSize: 11.5, color: T.blue, fontWeight: 700, marginTop: 5 }}>
+                    Open the Reading Room 📰
+                  </div>
+                </button>
+              )}
 
               {/* Check in / streak */}
               <div style={{
@@ -3419,6 +3518,11 @@ Respond with ONLY a JSON object, no markdown:
                           +5 pages
                         </button>
                         <button style={btn(T.stamp)} onClick={() => finishBook(b.id)}>I finished it!</button>
+                        {!b.gid && (
+                          <button style={ghostBtn} onClick={() => setGetBook({ title: b.title, author: b.author, pages: b.pages })}>
+                            Where do I get it?
+                          </button>
+                        )}
                         {b.currentPage > 0 && (
                           <button style={ghostBtn} onClick={() => catchMeUp(b)}>
                             {b.lastReadAt && Date.now() - b.lastReadAt > 4 * 86400000 ? "Been a while — catch me up 🕯️" : "Catch me up 🕯️"}
@@ -3691,11 +3795,17 @@ Respond with ONLY a JSON object, no markdown:
                               </button>
                             )}
                           </div>
-                          {r.gutenId && !flagged[r.key] && (
+                          {r.gutenId && !flagged[r.key] ? (
                             <button
                               style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 10.5, padding: "2px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif", textAlign: "left" }}
                               onClick={() => flagNotFree(r.key, r.title, r.gutenId)}>
                               Not the right book? Tell us
+                            </button>
+                          ) : (
+                            <button
+                              style={{ background: "none", border: "none", color: T.blue, cursor: "pointer", fontSize: 11, padding: "2px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif", textAlign: "left", fontWeight: 700 }}
+                              onClick={() => setGetBook({ title: r.title, author, pages })}>
+                              How do I get this book?
                             </button>
                           )}
                         </div>
@@ -5948,6 +6058,17 @@ Respond with ONLY a JSON object, no markdown:
 
             {newsDigest?.data && (
               <div>
+                {/* Challenge */}
+                {newsDigest.data.challenge && (
+                  <div style={{
+                    marginTop: 12, border: `2px dashed ${T.stamp}`, borderRadius: 12, padding: "13px 16px",
+                    background: "#FDF6EE",
+                  }}>
+                    <div style={{ fontSize: 11, letterSpacing: "0.14em", color: T.stamp, fontWeight: 700 }}>✨ THIS MONTH'S CHALLENGE</div>
+                    <div style={{ fontSize: 14.5, marginTop: 3 }}>{newsDigest.data.challenge}</div>
+                  </div>
+                )}
+
                 {/* Anniversaries */}
                 {(newsDigest.data.anniversaries || []).map((a, i) => (
                   <button key={i} onClick={() => readMoreNews(i, a)} style={{
@@ -5989,17 +6110,6 @@ Respond with ONLY a JSON object, no markdown:
                       onClick={() => { setTab("read"); setGutenQuery(newsDigest.data.classic.title); searchGutenberg(newsDigest.data.classic.title); }}>
                       Read it free in the app 📱
                     </button>
-                  </div>
-                )}
-
-                {/* Challenge */}
-                {newsDigest.data.challenge && (
-                  <div style={{
-                    marginTop: 12, border: `2px dashed ${T.stamp}`, borderRadius: 12, padding: "13px 16px",
-                    background: "#FDF6EE",
-                  }}>
-                    <div style={{ fontSize: 11, letterSpacing: "0.14em", color: T.stamp, fontWeight: 700 }}>✨ THIS MONTH'S CHALLENGE</div>
-                    <div style={{ fontSize: 14.5, marginTop: 3 }}>{newsDigest.data.challenge}</div>
                   </div>
                 )}
 
@@ -6233,6 +6343,59 @@ Respond with ONLY a JSON object, no markdown:
         </div>
       )}
 
+      {/* ---------------- HOW TO GET THIS BOOK ---------------- */}
+      {getBook && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 86, background: "rgba(34,51,77,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}
+          onClick={() => setGetBook(null)}>
+          <div onClick={(e) => e.stopPropagation()} style={{
+            maxWidth: 460, width: "100%", background: T.card, borderRadius: 16,
+            border: `2px solid ${T.rule}`, padding: "20px 22px", boxShadow: T.lift3,
+            maxHeight: "88vh", overflowY: "auto",
+          }}>
+            <div style={{ fontSize: 11, letterSpacing: "0.13em", color: T.blue, fontWeight: 700 }}>HOW TO GET THIS BOOK</div>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 21, margin: "3px 0 2px" }}>{getBook.title}</div>
+            {getBook.author && <div style={{ fontSize: 13, color: T.inkSoft }}>{getBook.author}</div>}
+            <p style={{ fontSize: 13.5, color: T.inkSoft, margin: "10px 0 14px" }}>
+              This one isn't in our free library — it's still under copyright, so we can't include it.
+              Here's how readers usually get it, cheapest first.
+            </p>
+
+            {[
+              ["🏛️", "Borrow it free from your library", "Most libraries lend ebooks and audiobooks instantly with a library card. Search Libby.",
+                `https://libbyapp.com/search/query-${encodeURIComponent(getBook.title)}/page-1`, T.green],
+              ["🔎", "Find a copy on a nearby shelf", "WorldCat shows which libraries near you have the physical book.",
+                `https://search.worldcat.org/search?q=${encodeURIComponent(getBook.title + " " + (getBook.author || ""))}`, T.blue],
+              ["📚", "Buy it and support a local bookstore", "Bookshop.org sends its profits to independent bookshops instead of a warehouse.",
+                `https://bookshop.org/beta-search?keywords=${encodeURIComponent(getBook.title + " " + (getBook.author || ""))}`, T.stamp],
+            ].map(([emoji, title, desc, href, color]) => (
+              <a key={title} href={href} target="_blank" rel="noopener noreferrer" style={{
+                display: "flex", gap: 11, alignItems: "flex-start", textDecoration: "none",
+                border: `1.5px solid ${T.rule}`, borderRadius: 11, padding: "11px 13px", marginBottom: 8,
+                background: T.paper, color: T.ink,
+              }}>
+                <span style={{ fontSize: 21, lineHeight: 1 }}>{emoji}</span>
+                <span>
+                  <span style={{ display: "block", fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 15, color }}>{title}</span>
+                  <span style={{ display: "block", fontSize: 12.5, color: T.inkSoft, marginTop: 1 }}>{desc}</span>
+                </span>
+              </a>
+            ))}
+
+            <div style={{ background: "#F5F8FC", border: `1px solid ${T.rule}`, borderRadius: 10, padding: "10px 13px", fontSize: 13 }}>
+              <strong>Or just ask.</strong> Your teacher or school librarian can often put a copy in your hands
+              tomorrow — and it costs nothing to ask.
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+              <button style={btn(T.green)} onClick={() => { addBook({ title: getBook.title, author: getBook.author, pages: getBook.pages || 200, status: "want" }); setGetBook(null); }}>
+                Add to my want-to-read
+              </button>
+              <button style={ghostBtn} onClick={() => { setGetBook(null); setTab("read"); }}>Find something free instead</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ---------------- DAILY SPOTLIGHT ---------------- */}
       {spotlight && (
         <div style={{ position: "fixed", inset: 0, zIndex: 85, background: "rgba(34,51,77,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}
@@ -6311,15 +6474,24 @@ Respond with ONLY a JSON object, no markdown:
                 {voicePref === "system" ? "🔈" : voicePref === "female" ? "👩" : "👨"}
               </button>
               <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13 }}
-                onClick={() => (readAlong.on ? stopReadAlong() : startReadAlong())}>
-                {readAlong.on ? "⏹ Stop" : "🔊 Read to me"}
+                onClick={async () => {
+                  if (readAlong.on || audioBusy) { stopAudio(); stopReadAlong(); return; }
+                  if (premiumVoice) { const ok = await playPremium(); if (ok) return; }
+                  startReadAlong();
+                }}>
+                {audioBusy ? "…" : readAlong.on ? "⏹ Stop" : "🔊 Read to me"}
               </button>
               <button title={tapMode === "define" ? "Tapping a word shows its meaning — tap here to switch" : "Tapping a word reads from there — tap here to switch"}
                 style={{ ...(tapMode === "read" ? btn(T.blue) : ghostBtn), padding: "4px 11px", fontSize: 12.5 }}
                 onClick={() => { stopReadAlong(); setTapMode(tapMode === "define" ? "read" : "define"); flash(tapMode === "define" ? "Tap any sentence to read from there ▶" : "Tap any word for its meaning 💬"); }}>
                 {tapMode === "define" ? "💬 Tap = meaning" : "▶ Tap = read"}
               </button>
-              <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
+              <button
+                title={premiumVoice ? "Studio voice on — tap for the device voice" : "Studio voice off — tap for the natural narrator"}
+                style={{ ...(premiumVoice ? btn(T.gold) : ghostBtn), padding: "4px 10px", fontSize: 12.5 }}
+                onClick={() => { stopAudio(); stopReadAlong(); setPremiumVoice(!premiumVoice); flash(premiumVoice ? "Device voice" : "Studio voice ✨ — natural narration"); }}>
+                {premiumVoice ? "✨ Studio" : "Studio?"}
+              </button>              <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
               <button
                 title={readerFace === "hyper" ? "Font: Hyperlegible — tap for Lexend" : readerFace === "lexend" ? "Font: Lexend (wider spacing) — tap for storybook" : "Font: storybook serif — tap for Hyperlegible"}
                 style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12.5, fontFamily: readerFace === "lexend" ? "'Lexend', sans-serif" : readerFace === "serif" ? "'Fraunces', serif" : "'Atkinson Hyperlegible', sans-serif" }}
@@ -6328,7 +6500,7 @@ Respond with ONLY a JSON object, no markdown:
               </button>
               <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
               <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
-              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopReadAlong(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
+              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopAudio(); stopReadAlong(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
             </div>
           </div>
 
@@ -6383,7 +6555,7 @@ Respond with ONLY a JSON object, no markdown:
                         <button
                           aria-label="Listen to this paragraph"
                           title="Listen to this paragraph"
-                          onClick={() => speakRange(para.start, para.end)}
+                          onClick={async () => { const ok = await speakRangeStudio(para.start, para.end); if (!ok) speakRange(para.start, para.end); }}
                           style={{
                             background: "none", border: "none", cursor: "pointer",
                             fontSize: Math.max(12, readerFont - 4), opacity: 0.45,
