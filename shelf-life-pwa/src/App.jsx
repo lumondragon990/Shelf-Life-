@@ -13,6 +13,11 @@ const T = {
   stamp: "#C24632",
   blue: "#2B5EA7",
   green: "#3E7C59",
+  gold: "#D9A03F",
+  // Elevation: card stock lifting off a desk, not a drop-shadow default
+  lift1: "0 1px 2px rgba(34,51,77,0.06), 0 2px 6px rgba(34,51,77,0.05)",
+  lift2: "0 2px 4px rgba(34,51,77,0.07), 0 8px 18px rgba(34,51,77,0.08)",
+  lift3: "0 6px 14px rgba(34,51,77,0.10), 0 18px 40px rgba(34,51,77,0.12)",
 };
 const SPINES = ["#2B5EA7", "#C24632", "#3E7C59", "#D9A03F", "#7C5CB0", "#B85C8A", "#4A8C9E"];
 
@@ -106,6 +111,112 @@ const GRADES = {
   },
 };
 const lvl = (c) => GRADES[c?.level] || GRADES.g35;
+
+// ---------- Browse by subject: broad coverage, not just novels ----------
+// Each entry: [label, Google Books query, Gutenberg topic for the free shelf]
+const SUBJECTS = [
+  ["✝️ Faith & theology", 'subject:"religion" OR subject:"theology"', "Christianity"],
+  ["📖 Bible & study", 'subject:"bible" OR intitle:"bible study"', "Bible"],
+  ["🕊️ Christian living", 'subject:"christian life" OR subject:"devotional"', "Christian life"],
+  ["⛪ Church history", 'subject:"church history"', "Church history"],
+  ["🌍 World religions", 'subject:"religions" OR subject:"islam" OR subject:"judaism" OR subject:"buddhism"', "Religion"],
+  ["🧠 Philosophy", 'subject:"philosophy"', "Philosophy"],
+  ["📜 History", 'subject:"history"', "History"],
+  ["🔬 Science", 'subject:"science"', "Science"],
+  ["🚀 Sci-fi & fantasy", 'subject:"science fiction" OR subject:"fantasy"', "Science fiction"],
+  ["🔍 Mystery", 'subject:"detective and mystery stories"', "Detective and mystery stories"],
+  ["💛 Romance", 'subject:"romance"', "Love stories"],
+  ["🎭 Poetry & drama", 'subject:"poetry" OR subject:"drama"', "Poetry"],
+  ["🧒 Kids & young readers", 'subject:"juvenile fiction"', "Children's literature"],
+  ["🇲🇽 En español", 'subject:"fiction"', "Spanish"],
+  ["💪 Biography", 'subject:"biography"', "Biography"],
+  ["🧰 Self-help", 'subject:"self-help"', "Conduct of life"],
+];
+
+// ---------- The shelf: the one place the app is allowed to show off ----------
+// Spines get cylindrical lighting, a visible page block, a deterministic lean,
+// and a contact shadow on a wooden board. Everything else in the app stays flat
+// so this reads as the signature.
+function Spine({ book, onClick }) {
+  const seed = (book.title || "").split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+  const h = 74 + (seed % 34);                 // height varies like real books
+  const w = 22 + ((seed * 3) % 16);           // thickness varies
+  const lean = ((seed % 5) - 2) * 0.5;        // -1deg .. +1deg, stable per title
+  const base = spineColor(book.title);
+  const done = book.status === "done";
+  const want = book.status === "want";
+  return (
+    <button
+      className="sl-spine"
+      onClick={onClick}
+      title={`${book.title}${book.author ? " — " + book.author : ""}`}
+      style={{
+        width: w, height: h, flex: "0 0 auto", position: "relative", cursor: "pointer",
+        border: "none", padding: 0, borderRadius: "2px 3px 0 0",
+        background: base,
+        // cylindrical lighting: dark gutter edge, lit belly, shaded outer edge
+        backgroundImage:
+          "linear-gradient(100deg, rgba(0,0,0,0.34) 0%, rgba(0,0,0,0.10) 9%, rgba(255,255,255,0.20) 42%, rgba(255,255,255,0.05) 62%, rgba(0,0,0,0.16) 86%, rgba(0,0,0,0.30) 100%)",
+        transform: `rotate(${lean}deg)`,
+        transformOrigin: "bottom center",
+        opacity: want ? 0.55 : 1,
+        filter: want ? "saturate(0.7)" : "none",
+        boxShadow: `inset 0 2px 0 rgba(255,255,255,0.22), 2px 6px 8px -4px rgba(34,51,77,0.45)`,
+        overflow: "hidden",
+      }}>
+      {/* page block: the cream edge of the paper showing past the cover */}
+      <span aria-hidden="true" style={{
+        position: "absolute", top: 2, right: 0, bottom: 0, width: 3,
+        background: "linear-gradient(90deg, rgba(0,0,0,0.18), #EFE7D4 60%, #D8CDB4)",
+      }} />
+      {/* head and tail bands, like a bound hardback */}
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, right: 3, top: 6, height: 2, background: "rgba(255,255,255,0.30)" }} />
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, right: 3, bottom: 5, height: 2, background: "rgba(255,255,255,0.22)" }} />
+      {/* spine title, set vertically as on a real book */}
+      {w >= 26 && (
+        <span style={{
+          position: "absolute", inset: "10px 5px 9px 2px",
+          writingMode: "vertical-rl", textOrientation: "mixed",
+          fontFamily: "'Fraunces', serif", fontWeight: 700,
+          fontSize: Math.min(11, w * 0.42), lineHeight: 1,
+          color: "rgba(255,255,255,0.92)", textShadow: "0 1px 1px rgba(0,0,0,0.35)",
+          overflow: "hidden", whiteSpace: "nowrap", textAlign: "left",
+        }}>
+          {book.title}
+        </span>
+      )}
+      {done && (
+        <span aria-hidden="true" title="finished" style={{
+          position: "absolute", left: "50%", bottom: 4, transform: "translateX(-50%)",
+          width: 6, height: 6, borderRadius: "50%", background: "#F4EEDD",
+          boxShadow: "0 0 0 1.5px rgba(0,0,0,0.25)",
+        }} />
+      )}
+    </button>
+  );
+}
+
+function Shelf({ books, onPick }) {
+  if (!books.length) return null;
+  return (
+    <div style={{ padding: "6px 0 0" }}>
+      <div style={{
+        display: "flex", alignItems: "flex-end", gap: 3,
+        padding: "0 14px", minHeight: 112, overflowX: "auto",
+      }}>
+        {books.map((b) => <Spine key={b.id} book={b} onClick={() => onPick && onPick(b)} />)}
+      </div>
+      {/* the board: quarter-sawn oak, a front lip, and the shadow it casts */}
+      <div aria-hidden="true" style={{
+        height: 13, borderRadius: "2px 2px 4px 4px",
+        background:
+          "repeating-linear-gradient(90deg, rgba(0,0,0,0.05) 0 2px, rgba(255,255,255,0.03) 2px 7px), " +
+          "linear-gradient(180deg, #A5825A 0%, #8A6B45 42%, #6E5334 100%)",
+        boxShadow: "0 3px 0 #5C452B, 0 10px 16px -6px rgba(34,51,77,0.45)",
+      }} />
+    </div>
+  );
+}
 
 // ---------- Brand mark: open book with a sprout ----------
 function Mark({ size = 64, light = false }) {
@@ -364,18 +475,26 @@ const topTag = (tagScores) => Object.entries(tagScores).sort((a, b) => b[1] - a[
 const normTitle = (t) => (t || "").toLowerCase().replace(/[^a-z0-9áéíóúñü ]/g, "").replace(/\s+/g, " ").trim();
 
 // Search Gutenberg's catalog (with a hard 5s timeout so it never slows the UI)
-async function gutenbergLookup(query) {
+async function gutenbergLookup(query, topic) {
+  const parse = (d) => (d.results || []).slice(0, 32).map((b) => ({
+    gid: b.id, key: normTitle(b.title), title: b.title, author: (b.authors || [])[0]?.name || "",
+  }));
+  const qs = topic ? `topic=${encodeURIComponent(topic)}` : `q=${encodeURIComponent(query)}`;
+  // Server proxy first — survives ad-blockers, school filters and privacy browsers
+  try {
+    const r = await fetch(`/api/guten?${qs}`);
+    if (r.ok) return parse(await r.json());
+  } catch { /* fall through */ }
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
-    const r = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(query)}`, { signal: ctrl.signal });
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const direct = topic
+      ? `https://gutendex.com/books?topic=${encodeURIComponent(topic)}`
+      : `https://gutendex.com/books?search=${encodeURIComponent(query)}`;
+    const r2 = await fetch(direct, { signal: ctrl.signal });
     clearTimeout(timer);
-    const d = await r.json();
-    const list = [];
-    for (const b of (d.results || []).slice(0, 24)) {
-      list.push({ gid: b.id, key: normTitle(b.title), title: b.title, author: (b.authors || [])[0]?.name || "" });
-    }
-    return list;
+    if (!r2.ok) return [];
+    return parse(await r2.json());
   } catch {
     return [];
   }
@@ -383,14 +502,26 @@ async function gutenbergLookup(query) {
 
 // Fuzzy-match a search-result title against Gutenberg entries
 const stripArticles = (t) => t.replace(/^(the|a|an|el|la|los|las|un|una)\s+/, "");
-function matchGuten(list, title) {
+function matchGuten(list, title, author) {
   const key = stripArticles(normTitle(title));
   if (!key || key.length < 4) return null;
+  const au = normTitle(author || "");
+  let loose = null;
   for (const g of list) {
     const gk = stripArticles(g.key);
-    if (gk === key || (gk.length >= 5 && key.length >= 5 && (gk.startsWith(key) || key.startsWith(gk)))) return g;
+    if (!gk) continue;
+    if (gk === key) return g;                                   // exact
+    if (gk.length >= 6 && key.length >= 6) {
+      if (gk.startsWith(key) || key.startsWith(gk)) return g;   // prefix
+      if (gk.includes(key) || key.includes(gk)) {               // containment
+        const ga = normTitle(g.author || "");
+        // If we know both authors, require a surname overlap before trusting it
+        if (!au || !ga || ga.split(" ").some((w) => w.length > 3 && au.includes(w))) return g;
+        loose = loose || g;
+      }
+    }
   }
-  return null;
+  return loose;
 }
 
 // ---------- Voice picker: find the calmest, most natural voice on this device ----------
@@ -728,6 +859,8 @@ export default function ShelfLife() {
   const [aiNextLoading, setAiNextLoading] = useState(false);
   const [morePicks, setMorePicks] = useState(null);
   const [morePicksLoading, setMorePicksLoading] = useState(false);
+  const [flagged, setFlagged] = useState({}); // resultKey -> true (reader says it isn't free)
+  const [subject, setSubject] = useState(null); // browsing a category
   const [blurbs, setBlurbs] = useState({}); // resultKey -> {loading, text}
   const [appRating, setAppRating] = useState(0);
   const [appFeedback, setAppFeedback] = useState("");
@@ -764,6 +897,7 @@ export default function ShelfLife() {
   const [reader, setReader] = useState(null); // {gid, title, author, pages, page, loading}
   const [readerFont, setReaderFont] = useState(17);
   const [tapMode, setTapMode] = useState("define"); // "define" | "read"
+  const [readerFace, setReaderFace] = useState("hyper"); // hyper | lexend | serif
   const [wordCard, setWordCard] = useState(null); // {word, loading, phonetic, pos, definition, notFound}
   const [myWords, setMyWords] = useState([]); // [{word, definition, at}]
   const [voicePref, setVoicePref] = useState("system");
@@ -1728,6 +1862,7 @@ Respond with ONLY a JSON object, no markdown:
   const searchBooks = async () => {
     const q = bookQuery.trim();
     if (!q) return;
+    setSubject(null);
     setSearching(true);
     setSearchResults([]);
     const mergeIn = (items) => {
@@ -1767,7 +1902,7 @@ Respond with ONLY a JSON object, no markdown:
       gutenbergLookup(q).then((glist) => {
         if (!glist || !glist.length) return;
         setSearchResults((prev) => (prev || []).map((doc) => {
-          const g = matchGuten(glist, doc.title);
+          const g = matchGuten(glist, doc.title, (doc.author_name || [])[0] || "");
           return g ? { ...doc, gutenId: g.gid, gutenAuthor: g.author } : doc;
         }));
       });
@@ -2465,6 +2600,73 @@ Respond with ONLY a JSON object, no markdown:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, loaded, onboarded]);
 
+  // ----- Browse a whole subject, including free titles in that subject -----
+  const browseSubject = async (entry) => {
+    const [label, gq, topic] = entry;
+    setSubject(label);
+    setSearching(true);
+    setSearchResults([]);
+    setBookQuery("");
+    const merge = (items) => setSearchResults((prev) => {
+      const seen = new Set((prev || []).map((x) => `${(x.title || "").toLowerCase()}`));
+      const out = [...(prev || [])];
+      for (const it of items) {
+        const t = (it.title || "").toLowerCase();
+        if (it.title && !seen.has(t)) { seen.add(t); out.push(it); }
+      }
+      return out.slice(0, 30);
+    });
+    const esQ = label.includes("español") ? "&langRestrict=es" : "";
+    try {
+      let d;
+      try {
+        const r = await fetch(`/api/gbooks?q=${encodeURIComponent(gq)}${esQ}&maxResults=24`);
+        d = r.ok ? await r.json() : null;
+      } catch { d = null; }
+      if (!d) {
+        const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(gq)}${esQ}&maxResults=24`);
+        d = await r2.json();
+      }
+      merge((d.items || []).map((it) => {
+        const v = it.volumeInfo || {};
+        return {
+          key: `gb-${it.id}`, title: v.title, author_name: v.authors || [],
+          number_of_pages_median: v.pageCount || null,
+          first_publish_year: (v.publishedDate || "").slice(0, 4) || null,
+          gbCover: v.imageLinks?.smallThumbnail?.replace("http://", "https://") || null,
+        };
+      }));
+    } catch { /* keep whatever landed */ }
+    setSearching(false);
+    // Free titles in this subject, badged
+    gutenbergLookup("", topic).then((glist) => {
+      if (!glist.length) return;
+      setSearchResults((prev) => {
+        const annotated = (prev || []).map((doc) => {
+          const g = matchGuten(glist, doc.title, (doc.author_name || [])[0] || "");
+          return g ? { ...doc, gutenId: g.gid, gutenAuthor: g.author } : doc;
+        });
+        // Append free books from this subject that weren't already in the list
+        const seen = new Set(annotated.map((x) => normTitle(x.title)));
+        const extras = glist.filter((g) => !seen.has(g.key)).slice(0, 10).map((g) => ({
+          key: `gt-${g.gid}`, title: g.title, author_name: g.author ? [g.author] : [],
+          gutenId: g.gid, gutenAuthor: g.author,
+        }));
+        return [...annotated, ...extras].slice(0, 36);
+      });
+    });
+  };
+
+  // ----- Readers can correct a wrong "free to read" badge -----
+  const flagNotFree = async (key, title, gid) => {
+    setFlagged((f) => ({ ...f, [key]: true }));
+    flash("Thanks — badge removed. That report helps us fix the match. 🙏");
+    try {
+      await storage.set(`flag:${String(Date.now()).padStart(15, "0")}-${uid()}`,
+        JSON.stringify({ title: String(title).slice(0, 120), gid: gid || null, at: Date.now() }), true);
+    } catch { /* the local correction still stands */ }
+  };
+
   // ----- Quick book summaries in search results -----
   const fetchBlurb = async (key, title, author) => {
     if (blurbs[key]?.text || blurbs[key]?.loading) { setBlurbs((b) => ({ ...b, [key]: { ...b[key], open: !b[key].open } })); return; }
@@ -2760,14 +2962,14 @@ Respond with ONLY a JSON object, no markdown:
           </div>
           <div style={{
             border: `2px solid ${T.stamp}`, color: T.stamp, borderRadius: 6, padding: "3px 10px",
-            fontWeight: 700, fontSize: 12, letterSpacing: "0.12em", transform: "rotate(-2deg)",
-          }}>
+            fontWeight: 700, fontSize: 12,
+          }} className="sl-stamp">
             NEW READERS WELCOME
           </div>
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v38</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v41</span>
         </p>
       </header>
 
@@ -2783,9 +2985,11 @@ Respond with ONLY a JSON object, no markdown:
         ].map(([id, label]) => (
           <button
             key={id}
+            className="sl-tab"
             onClick={() => setTab(id)}
             style={{
               flex: "0 0 auto", padding: "10px 18px", borderRadius: "10px 10px 0 0",
+              boxShadow: (tab === id || (id === "more" && ["personality", "foryou", "club", "rewards"].includes(tab))) ? "0 -2px 6px rgba(34,51,77,0.06)" : "none",
               border: `1.5px solid ${T.rule}`, borderBottom: "none", cursor: "pointer",
               background: (tab === id || (id === "more" && ["personality", "foryou", "club", "rewards"].includes(tab))) ? T.card : "rgba(255,255,255,0.35)",
               color: (tab === id || (id === "more" && ["personality", "foryou", "club", "rewards"].includes(tab))) ? T.ink : T.inkSoft,
@@ -2799,9 +3003,9 @@ Respond with ONLY a JSON object, no markdown:
       </nav>
 
       <main style={{
-        maxWidth: 880, margin: "0 auto 60px", padding: "22px 18px 30px",
-        background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: "0 12px 12px 12px",
-        minHeight: 420,
+        maxWidth: 880, margin: "0 auto 60px", padding: "26px 22px 34px",
+        background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: "0 14px 14px 14px",
+        minHeight: 420, boxShadow: T.lift3,
       }}>
         {/* ---------------- TODAY ---------------- */}
         {tab === "today" && (() => {
@@ -3069,124 +3273,17 @@ Respond with ONLY a JSON object, no markdown:
               ))}
             </div>
 
-            {/* Bookshelf visualization */}
+            {/* Bookshelf — the signature */}
             {books.length > 0 && (
-              <div style={{ marginBottom: 22 }}>
-                <div style={{ display: "flex", alignItems: "flex-end", gap: 4, padding: "0 8px", minHeight: 84, flexWrap: "wrap" }}>
-                  {books.slice(0, 24).map((b, i) => {
-                    const h = 56 + ((b.title.length * 7 + i * 13) % 28);
-                    const w = 16 + ((b.title.length * 3) % 12);
-                    return (
-                      <div
-                        key={b.id}
-                        title={`${b.title}${b.author ? " — " + b.author : ""}`}
-                        style={{
-                          width: w, height: h, background: spineColor(b.title),
-                          borderRadius: "3px 3px 0 0", position: "relative",
-                          opacity: b.status === "want" ? 0.45 : 1,
-                          boxShadow: "inset -3px 0 rgba(0,0,0,0.18)",
-                        }}
-                      />
-                    );
-                  })}
+              <div style={{ marginBottom: 24 }}>
+                <div className="sl-rule" style={{ marginBottom: 10 }}>
+                  <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: 0 }}>
+                    Your shelf
+                  </h2>
                 </div>
-                <div style={{ height: 10, background: "#8A6B45", borderRadius: 3, boxShadow: "0 3px 0 #6E5334" }} />
-                <p style={{ fontSize: 12, color: T.inkSoft, margin: "6px 4px 0" }}>
-                  Your shelf so far — faded spines are books you want to read. Hover a spine to see its title.
-                </p>
-              </div>
-            )}
-
-            {/* Add book */}
-            {!showAdd ? (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button style={btn(T.green)} onClick={() => setShowAdd(true)}>+ Add a book</button>
-                <button style={readToday ? ghostBtn : btn(T.stamp)} onClick={markToday}>
-                  {readToday ? "Read today ✓" : "I read today — any amount counts 🌱"}
-                </button>
-              </div>
-            ) : (
-              <Ruled style={{ marginBottom: 8 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-                  <div>
-                    <BookTitleInput
-                      placeholder="Book title * (start typing for suggestions)"
-                      value={form.title}
-                      onChange={(v) => setForm({ ...form, title: v })}
-                      onPick={async (b) => {
-                        setForm((f) => ({ ...f, title: b.title, author: b.author, pages: String(b.pages || "") }));
-                        if (!b.pages) {
-                          const pages = await lookupPages(b.title, b.author);
-                          if (pages) setForm((f) => (f.title === b.title ? { ...f, pages: String(pages) } : f));
-                        }
-                      }}
-                    />
-                    <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 4 }}>
-                      Start typing and pick a match — we'll fill in the author and page count for you.
-                    </div>
-                  </div>
-                  <input style={input} placeholder="Author" value={form.author}
-                    onChange={(e) => setForm({ ...form, author: e.target.value })} />
-                  <input style={input} placeholder="Pages (guess is fine)" inputMode="numeric" value={form.pages}
-                    onChange={(e) => setForm({ ...form, pages: e.target.value.replace(/\D/g, "") })} />
-                  <select style={input} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-                    <option value="reading">Reading it now</option>
-                    <option value="want">Want to read</option>
-                    <option value="done">Already finished</option>
-                  </select>
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                  <button
-                    style={{ ...btn(T.green), opacity: form.title.trim() ? 1 : 0.5 }}
-                    disabled={!form.title.trim()}
-                    onClick={() => {
-                      addBook({ ...form, status: form.status });
-                      setForm({ title: "", author: "", pages: "", status: "reading" });
-                      setShowAdd(false);
-                    }}
-                  >
-                    Add to shelf
-                  </button>
-                  <button style={ghostBtn} onClick={() => setShowAdd(false)}>Cancel</button>
-                </div>
-              </Ruled>
-            )}
-
-            {!loaded && <p style={{ color: T.inkSoft }}>Opening your shelf…</p>}
-            {loaded && books.length === 0 && (
-              <Ruled style={{ marginTop: 16 }}>
-                <p style={{ margin: 0, lineHeight: "28px" }}>
-                  <strong>Your shelf is empty — that's the fun part.</strong> Add a book you're reading,
-                  or head to <em>Find a book</em> for beginner-friendly picks. Even 5 pages a day counts.
-                </p>
-              </Ruled>
-            )}
-
-            {/* Reading pace over time */}
-            {fluency.length > 0 && (
-              <div style={{ marginTop: 20 }}>
-                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: 0, borderBottom: `2px solid ${T.rule}`, paddingBottom: 6 }}>
-                  🎙 My reading pace
-                </h2>
-                <p style={{ fontSize: 12, color: T.inkSoft, margin: "6px 0 8px" }}>
-                  From reading out loud in the app. Going up over weeks is the whole point — not any single number.
-                </p>
-                <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 70, padding: "0 2px" }}>
-                  {fluency.slice(-14).map((f) => {
-                    const max = Math.max(...fluency.slice(-14).map((x) => x.wcpm), 40);
-                    return (
-                      <div key={f.d} title={`${f.d}: ${f.wcpm} wpm, ${f.acc}% accuracy`} style={{ flex: 1, textAlign: "center" }}>
-                        <div style={{
-                          height: Math.max(4, Math.round((f.wcpm / max) * 58)), background: T.blue,
-                          borderRadius: "3px 3px 0 0", opacity: 0.85,
-                        }} />
-                      </div>
-                    );
-                  })}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: T.inkSoft, marginTop: 4 }}>
-                  <span>{fluency.length > 1 ? `${fluency[Math.max(0, fluency.length - 14)].wcpm} wpm` : ""}</span>
-                  <span style={{ fontWeight: 700, color: T.ink }}>latest: {fluency[fluency.length - 1].wcpm} words per minute</span>
+                <Shelf books={books.slice(0, 30)} onPick={(b) => flash(`${b.title}${b.author ? " — " + b.author : ""}`)} />
+                <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 9, textAlign: "center" }}>
+                  {books.length} book{books.length !== 1 ? "s" : ""} on the shelf · faded spines are ones you want to read · a dot means finished
                 </div>
               </div>
             )}
@@ -3513,6 +3610,20 @@ Respond with ONLY a JSON object, no markdown:
                   {searching ? "Searching…" : "Search"}
                 </button>
               </div>
+              <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: "28px" }}>Or browse a subject:</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 6 }}>
+                {SUBJECTS.map((entry) => (
+                  <button key={entry[0]} onClick={() => browseSubject(entry)} style={{
+                    padding: "5px 12px", borderRadius: 999, fontSize: 12.5, cursor: "pointer", fontWeight: 700,
+                    border: `1.5px solid ${subject === entry[0] ? T.blue : T.rule}`,
+                    background: subject === entry[0] ? T.blue : "transparent",
+                    color: subject === entry[0] ? "#FFF" : T.ink,
+                    fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                  }}>
+                    {entry[0]}
+                  </button>
+                ))}
+              </div>
             </Ruled>
 
             {searchResults && (
@@ -3560,7 +3671,7 @@ Respond with ONLY a JSON object, no markdown:
                               {blurbs[r.key].loading ? "Getting the gist…" : blurbs[r.key].text}
                             </div>
                           )}
-                          {r.gutenId && (
+                          {r.gutenId && !flagged[r.key] && (
                             <span style={{ fontSize: 10.5, fontWeight: 700, color: T.blue, letterSpacing: "0.06em" }}>
                               📱 FREE DIGITAL — read it in this app
                             </span>
@@ -3572,7 +3683,7 @@ Respond with ONLY a JSON object, no markdown:
                               onClick={() => addBook({ title: r.title, author, pages: pages || 200, status: "want" })}>
                               {owned ? "On your shelf ✓" : "Add to shelf"}
                             </button>
-                            {r.gutenId && (
+                            {r.gutenId && !flagged[r.key] && (
                               <button
                                 style={{ ...btn(), padding: "6px 12px", fontSize: 12 }}
                                 onClick={() => { addDigital({ gid: r.gutenId, title: r.title, author: r.gutenAuthor || author }); setTab("read"); }}>
@@ -3580,6 +3691,13 @@ Respond with ONLY a JSON object, no markdown:
                               </button>
                             )}
                           </div>
+                          {r.gutenId && !flagged[r.key] && (
+                            <button
+                              style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 10.5, padding: "2px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif", textAlign: "left" }}
+                              onClick={() => flagNotFree(r.key, r.title, r.gutenId)}>
+                              Not the right book? Tell us
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
@@ -6202,6 +6320,12 @@ Respond with ONLY a JSON object, no markdown:
                 {tapMode === "define" ? "💬 Tap = meaning" : "▶ Tap = read"}
               </button>
               <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
+              <button
+                title={readerFace === "hyper" ? "Font: Hyperlegible — tap for Lexend" : readerFace === "lexend" ? "Font: Lexend (wider spacing) — tap for storybook" : "Font: storybook serif — tap for Hyperlegible"}
+                style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12.5, fontFamily: readerFace === "lexend" ? "'Lexend', sans-serif" : readerFace === "serif" ? "'Fraunces', serif" : "'Atkinson Hyperlegible', sans-serif" }}
+                onClick={() => { const next = readerFace === "hyper" ? "lexend" : readerFace === "lexend" ? "serif" : "hyper"; setReaderFace(next); flash(next === "lexend" ? "Lexend — wider spacing, easier tracking" : next === "serif" ? "Storybook serif" : "Hyperlegible — clearest letter shapes"); }}>
+                Aa
+              </button>
               <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
               <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
               <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopReadAlong(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
@@ -6212,13 +6336,20 @@ Respond with ONLY a JSON object, no markdown:
             {reader.loading ? (
               <p style={{ color: T.inkSoft, textAlign: "center", marginTop: 60 }}>Opening your book… 📖</p>
             ) : (
-              <div>
+              <div className="sl-page">
                 <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", marginBottom: 14 }}>
                   {tapMode === "define"
                     ? "💡 Tap any word for its meaning · tap a 🔊 to hear a paragraph · your spot is saved as you go"
                     : "▶ Tap any sentence to start reading aloud from there"}
                 </div>
-                <div style={{ fontSize: readerFont, lineHeight: 1.7, fontFamily: "'Atkinson Hyperlegible', sans-serif" }}>
+                <div style={{
+                  fontSize: readerFont,
+                  lineHeight: readerFace === "lexend" ? 1.85 : 1.7,
+                  letterSpacing: readerFace === "lexend" ? "0.01em" : "normal",
+                  fontFamily: readerFace === "lexend" ? "'Lexend', sans-serif"
+                    : readerFace === "serif" ? "'Fraunces', Georgia, serif"
+                    : "'Atkinson Hyperlegible', sans-serif",
+                }}>
                   {(() => {
                     const page = reader.pages[reader.page];
                     const paras = [];
@@ -6487,6 +6618,65 @@ Respond with ONLY a JSON object, no markdown:
       )}
 
       <style>{`
+        /* --- Paper fibre. Real manila stock isn't a flat colour. Kept at 3.5%
+               so it reads as material, never as noise. --- */
+        body::before {
+          content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:0.035;
+          background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23f)'/%3E%3C/svg%3E");
+        }
+        header, nav, main, footer { position:relative; z-index:1; }
+
+        /* --- Spines behave like objects: lift and turn toward you --- */
+        .sl-spine { transition: transform .16s cubic-bezier(.2,.8,.2,1), box-shadow .16s ease, filter .16s ease; }
+        .sl-spine:hover { transform: translateY(-9px) rotate(0deg) scale(1.03) !important;
+          box-shadow: inset 0 2px 0 rgba(255,255,255,0.28), 3px 12px 16px -6px rgba(34,51,77,0.5) !important;
+          z-index:2; }
+        .sl-spine:active { transform: translateY(-4px) !important; }
+
+        /* --- The FINISHED mark should look pressed into the paper, not printed --- */
+        .sl-stamp { transform: rotate(-3.5deg); opacity:0.88;
+          text-shadow: 0 0 1px rgba(194,70,50,0.5); letter-spacing:0.14em; }
+
+        /* --- The reader is an open book: shade the gutter and lift the page --- */
+        .sl-page { position:relative; }
+        .sl-page::before {
+          content:""; position:absolute; left:-22px; top:0; bottom:0; width:26px; pointer-events:none;
+          background:linear-gradient(90deg, rgba(34,51,77,0.10), rgba(34,51,77,0.02) 60%, transparent);
+        }
+
+        /* --- Elevation: cards lift off the paper instead of sitting flat --- */
+        .sl-shell { box-shadow: ${T.lift3}; }
+        main > div > div[style*="border-radius"], main [style*="borderRadius: 1"] { }
+
+        /* --- Display type: tighter, more confident headings --- */
+        h1, h2, h3 { letter-spacing: -0.018em; }
+        h1 { line-height: 1.02; }
+        h2 { line-height: 1.12; }
+
+        /* --- Body rhythm: measurably easier to read than browser defaults --- */
+        body { line-height: 1.55; }
+
+        /* --- Buttons feel like objects you can press --- */
+        button { transition: transform .12s ease, box-shadow .12s ease, filter .12s ease; }
+        button:hover:not(:disabled) { filter: brightness(1.04); }
+        button:active:not(:disabled) { transform: translateY(1px); }
+
+        /* --- Tab bar: the active tab reads as the front card in a catalogue --- */
+        .sl-tab { transition: background .15s ease, color .15s ease, transform .15s ease; }
+        .sl-tab:hover { transform: translateY(-1px); }
+
+        /* --- Cards gain a quiet lift and respond to the cursor --- */
+        .sl-card { box-shadow: ${T.lift1}; transition: box-shadow .18s ease, transform .18s ease; }
+        .sl-card:hover { box-shadow: ${T.lift2}; transform: translateY(-2px); }
+
+        /* --- Section headings get a small stamped rule, echoing the card catalogue --- */
+        .sl-rule::after { content:""; display:block; width:44px; height:3px;
+          background:${T.stamp}; border-radius:99px; margin-top:6px; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .sl-card:hover, .sl-tab:hover, button:active { transform:none; }
+        }
+
         @media print {
           body * { visibility: hidden !important; }
           #sl-report, #sl-report * { visibility: visible !important; }
@@ -6606,7 +6796,7 @@ function BookTitleInput({ value, onChange, onPick, placeholder }) {
         gutenbergLookup(q).then((glist) => {
           if (!glist || !glist.length) return;
           setResults((prev) => prev.map((m) => {
-            const g = matchGuten(glist, m.title);
+            const g = matchGuten(glist, m.title, m.author);
             return g ? { ...m, gutenId: g.gid } : m;
           }));
         });
@@ -6614,7 +6804,7 @@ function BookTitleInput({ value, onChange, onPick, placeholder }) {
         gutenPromise.then((glist) => {
           if (!glist.length) return;
           setResults((prev) => prev.map((m) => {
-            const g = matchGuten(glist, m.title);
+            const g = matchGuten(glist, m.title, m.author);
             return g ? { ...m, gutenId: g.gid } : m;
           }));
         });
