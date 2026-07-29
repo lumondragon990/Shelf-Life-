@@ -662,9 +662,9 @@ async function loadShelf() {
   try {
     const r = await storage.get("shelf-data-v1");
     const d = r ? JSON.parse(r.value) : {};
-    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "system", newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, readLog: d.readLog || [], fluency: d.fluency || [], classes: d.classes || [], family: d.family || null, famSeen: d.famSeen || 0, lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
+    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "female", studioPref: d.studioPref === undefined ? null : d.studioPref, newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, readLog: d.readLog || [], fluency: d.fluency || [], classes: d.classes || [], family: d.family || null, famSeen: d.famSeen || 0, lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
   } catch {
-    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "system", newsDigest: null, quizNudgeDismissed: false, readLog: [], fluency: [], classes: [], family: null, famSeen: 0, lastSpotlight: "", onboarded: false, userName: "", role: "" };
+    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "female", studioPref: null, newsDigest: null, quizNudgeDismissed: false, readLog: [], fluency: [], classes: [], family: null, famSeen: 0, lastSpotlight: "", onboarded: false, userName: "", role: "" };
   }
 }
 async function saveShelf(data) {
@@ -899,7 +899,10 @@ export default function ShelfLife() {
   const [readerFont, setReaderFont] = useState(17);
   const [tapMode, setTapMode] = useState("define"); // "define" | "read"
   const [readerFace, setReaderFace] = useState("hyper"); // hyper | lexend | serif
-  const [premiumVoice, setPremiumVoice] = useState(false);
+  const [studioPref, setStudioPref] = useState(null); // null = auto, true/false = user chose
+  const [studioAvailable, setStudioAvailable] = useState(false);
+  const premiumVoice = studioPref === null ? studioAvailable : studioPref;
+  const setPremiumVoice = (v) => { setStudioPref(v); persist({ studioPref: v }); };
   const [audioBusy, setAudioBusy] = useState(false);
   const [wordCard, setWordCard] = useState(null); // {word, loading, phonetic, pos, definition, notFound}
   const [myWords, setMyWords] = useState([]); // [{word, definition, at}]
@@ -957,7 +960,8 @@ export default function ShelfLife() {
       setTeaching(d.teaching || null);
       setDigitalShelf(d.digitalShelf || []);
       setMyWords(d.myWords || []);
-      setVoicePref(d.voicePref2 || "system");
+      setVoicePref(d.voicePref2 || "female");
+      setStudioPref(d.studioPref === undefined ? null : d.studioPref);
       setNewsDigest(d.newsDigest || null);
       setQuizNudgeDismissed(d.quizNudgeDismissed || false);
       setReadLog(d.readLog || []);
@@ -1687,6 +1691,15 @@ Respond with ONLY a JSON object, no markdown:
   const latestRef = useRef({});
   latestRef.current = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, myWords, voicePref, newsDigest, quizNudgeDismissed, readLog, fluency, classes, family, famSeen, lastSpotlight, onboarded, userName, role };
 
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/speak?check=1")
+      .then((r) => (r.ok ? r.json() : { available: false }))
+      .then((d) => { if (alive) setStudioAvailable(Boolean(d.available)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   const persist = (patch) => {
     const next = { ...latestRef.current, ...patch };
     // Any update to the active class flows into the teacher's class list
@@ -1710,7 +1723,8 @@ Respond with ONLY a JSON object, no markdown:
     setTeaching(next.teaching);
     setDigitalShelf(next.digitalShelf);
     setMyWords(next.myWords);
-    setVoicePref(next.voicePref2 || next.voicePref || "system");
+    setVoicePref(next.voicePref2 || next.voicePref || "female");
+    setStudioPref(next.studioPref === undefined ? null : next.studioPref);
     setNewsDigest(next.newsDigest !== undefined ? next.newsDigest : null);
     setQuizNudgeDismissed(next.quizNudgeDismissed || false);
     setReadLog(next.readLog || []);
@@ -3051,7 +3065,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v43</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v45</span>
         </p>
       </header>
 
@@ -6463,15 +6477,26 @@ Respond with ONLY a JSON object, no markdown:
               <div style={{ fontSize: 11.5, color: T.inkSoft }}>{reader.author}</div>
             </div>
             <div style={{ display: "flex", gap: 5, alignItems: "center", flexShrink: 0, flexWrap: "wrap" }}>
-              <button title="Voice: tap to change (system / female / male)"
-                style={{ ...ghostBtn, padding: "4px 9px", fontSize: 15 }}
+              <button
+                title={premiumVoice
+                  ? (voicePref === "male" ? "Narrator: Marco — tap for Ana" : "Narrator: Ana — tap for Marco")
+                  : "Voice: tap to change (device / female / male)"}
+                style={{ ...ghostBtn, padding: "4px 11px", fontSize: premiumVoice ? 12.5 : 15, whiteSpace: "nowrap" }}
                 onClick={() => {
-                  stopReadAlong();
-                  const next = voicePref === "system" ? "female" : voicePref === "female" ? "male" : "system";
-                  persist({ voicePref2: next });
-                  flash(next === "system" ? "Voice: device default 🔈 (most reliable)" : next === "female" ? "Voice: female 👩" : "Voice: male 👨");
+                  stopAudio(); stopReadAlong();
+                  if (premiumVoice) {
+                    const next = voicePref === "male" ? "female" : "male";
+                    persist({ voicePref2: next });
+                    flash(next === "male" ? "Narrator: Marco 👨" : "Narrator: Ana 👩");
+                  } else {
+                    const next = voicePref === "system" ? "female" : voicePref === "female" ? "male" : "system";
+                    persist({ voicePref2: next });
+                    flash(next === "system" ? "Voice: device default 🔈 (most reliable)" : next === "female" ? "Voice: female 👩" : "Voice: male 👨");
+                  }
                 }}>
-                {voicePref === "system" ? "🔈" : voicePref === "female" ? "👩" : "👨"}
+                {premiumVoice
+                  ? (voicePref === "male" ? "👨 Marco" : "👩 Ana")
+                  : (voicePref === "system" ? "🔈" : voicePref === "female" ? "👩" : "👨")}
               </button>
               <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13 }}
                 onClick={async () => {
@@ -6486,12 +6511,18 @@ Respond with ONLY a JSON object, no markdown:
                 onClick={() => { stopReadAlong(); setTapMode(tapMode === "define" ? "read" : "define"); flash(tapMode === "define" ? "Tap any sentence to read from there ▶" : "Tap any word for its meaning 💬"); }}>
                 {tapMode === "define" ? "💬 Tap = meaning" : "▶ Tap = read"}
               </button>
-              <button
+              {studioAvailable && <button
                 title={premiumVoice ? "Studio voice on — tap for the device voice" : "Studio voice off — tap for the natural narrator"}
                 style={{ ...(premiumVoice ? btn(T.gold) : ghostBtn), padding: "4px 10px", fontSize: 12.5 }}
-                onClick={() => { stopAudio(); stopReadAlong(); setPremiumVoice(!premiumVoice); flash(premiumVoice ? "Device voice" : "Studio voice ✨ — natural narration"); }}>
+                onClick={() => {
+                  stopAudio(); stopReadAlong();
+                  const on = !premiumVoice;
+                  setPremiumVoice(on);
+                  if (on && voicePref === "system") persist({ voicePref2: "female" });
+                  flash(on ? "Studio voice ✨ — tap the narrator to switch Ana / Marco" : "Device voice");
+                }}>
                 {premiumVoice ? "✨ Studio" : "Studio?"}
-              </button>              <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
+              </button>}              <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
               <button
                 title={readerFace === "hyper" ? "Font: Hyperlegible — tap for Lexend" : readerFace === "lexend" ? "Font: Lexend (wider spacing) — tap for storybook" : "Font: storybook serif — tap for Hyperlegible"}
                 style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12.5, fontFamily: readerFace === "lexend" ? "'Lexend', sans-serif" : readerFace === "serif" ? "'Fraunces', serif" : "'Atkinson Hyperlegible', sans-serif" }}
