@@ -2171,6 +2171,10 @@ Respond with ONLY a JSON object, no markdown:
 
   // When true, finishing a page rolls straight into the next one.
   const autoRead = useRef(false);
+  // Callbacks fire long after render, so they must read the CURRENT reader,
+  // not the one captured when the callback was created.
+  const readerRef = useRef(null);
+  readerRef.current = reader;
 
   // Silence everything the app can make sound with, in one call.
   const stopAllSpeech = () => {
@@ -2251,34 +2255,47 @@ Respond with ONLY a JSON object, no markdown:
   };
 
   // ----- Continuous narration: keeps going page after page until you stop it -----
-  const readOnFrom = async (fromChar) => {
-    if (!reader?.pages?.length) return;
+  const readOnFrom = async (fromChar, pageOverride) => {
+    const rd = readerRef.current;
+    if (!rd?.pages?.length) return;
+    const pageIdx = pageOverride === undefined ? rd.page : pageOverride;
+    if (pageIdx < 0 || pageIdx >= rd.pages.length) return;
+
     stopAllSpeech();
     autoRead.current = true;
     const myGen = audioGen.current;
-    const page = reader.pages[reader.page];
+    const pageText = rd.pages[pageIdx];
     const isWholePage = fromChar <= 0;
 
+    // Roll onto the next page — computed from the page we just READ, never
+    // from a captured render, so it can't rewind or stall.
     const onFinished = () => {
       if (!autoRead.current || audioGen.current !== myGen) return;
-      if (reader.page >= reader.pages.length - 1) {
+      const cur = readerRef.current;
+      if (!cur || pageIdx >= cur.pages.length - 1) {
         autoRead.current = false;
+        setReadAlong({ on: false, char: -1 });
         flash("That's the end — nicely done 📖");
         return;
       }
-      setTimeout(() => { turnPage(1, true); setTimeout(() => readOnFrom(0), 80); }, 150);
+      const nextPage = pageIdx + 1;
+      turnPage(1, true);
+      setTimeout(() => {
+        if (!autoRead.current || audioGen.current !== myGen) return;
+        readOnFrom(0, nextPage);
+      }, 140);
     };
 
     if (premiumVoice) {
       setAudioBusy(true);
       try {
         const v = voicePref === "male" ? "m" : "f";
-        const canCache = isWholePage && !reader.isText && !String(reader.gid).startsWith("text:");
+        const canCache = isWholePage && !rd.isText && !String(rd.gid).startsWith("text:");
         const r = canCache
-          ? await fetch(`/api/speak?gid=${encodeURIComponent(reader.gid)}&page=${reader.page}&voice=${v}`)
+          ? await fetch(`/api/speak?gid=${encodeURIComponent(rd.gid)}&page=${pageIdx}&voice=${v}`)
           : await fetch("/api/speak", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text: page.slice(fromChar).slice(0, 4000), voice: v }),
+              body: JSON.stringify({ text: pageText.slice(fromChar).slice(0, 4000), voice: v }),
             });
         if (audioGen.current !== myGen) return;
         if (r.ok) {
@@ -2294,17 +2311,17 @@ Respond with ONLY a JSON object, no markdown:
             setReadAlong({ on: false, char: -1 });
             onFinished();
           };
-          audio.onerror = () => { setAudioBusy(false); setReadAlong({ on: false, char: -1 }); };
+          audio.onerror = () => { setAudioBusy(false); setReadAlong({ on: false, char: -1 }); autoRead.current = false; };
           await audio.play();
           return;
         }
-      } catch { /* fall through to device voice */ }
+      } catch { /* fall through to the device voice */ }
       setAudioBusy(false);
       if (audioGen.current !== myGen) return;
     }
 
     try {
-      const text = page.slice(fromChar);
+      const text = pageText.slice(fromChar);
       const u = new SpeechSynthesisUtterance(text);
       const accents = (text.match(/[áéíóúñü]/gi) || []).length;
       u.lang = accents > 4 ? "es-ES" : "en-US";
@@ -2315,11 +2332,12 @@ Respond with ONLY a JSON object, no markdown:
         if (e.charIndex !== undefined) setReadAlong({ on: true, char: fromChar + e.charIndex });
       };
       u.onend = () => { setReadAlong({ on: false, char: -1 }); onFinished(); };
-      u.onerror = () => setReadAlong({ on: false, char: -1 });
+      u.onerror = () => { setReadAlong({ on: false, char: -1 }); autoRead.current = false; };
       setReadAlong({ on: true, char: fromChar });
       safeSpeak(u);
     } catch {
       setReadAlong({ on: false, char: -1 });
+      autoRead.current = false;
     }
   };
 
@@ -2575,16 +2593,18 @@ Respond with ONLY a JSON object, no markdown:
   };
 
   const turnPage = (delta, keepAudio) => {
-    if (!reader?.pages?.length) return;
+    const rd = readerRef.current;
+    if (!rd?.pages?.length) return;
     if (!keepAudio) stopAllSpeech();
-    const total = reader.pages.length;
-    const page = Math.max(0, Math.min(total - 1, reader.page + delta));
-    setReader({ ...reader, page });
+    const total = rd.pages.length;
+    const page = Math.max(0, Math.min(total - 1, rd.page + delta));
+    setReader({ ...rd, page });
+    readerRef.current = { ...rd, page };   // callbacks can rely on it immediately
     const atEnd = page >= total - 1;
     // Sync progress to the linked book on My Shelf; last page = a real finish
     let earned = 0;
-    const nextBooks = books.map((x) => {
-      if (x.gid !== reader.gid) return x;
+    const nextBooks = (latestRef.current.books || books).map((x) => {
+      if (x.gid !== rd.gid) return x;
       if (atEnd && x.status !== "done") {
         earned = 25;
         return { ...x, pages: total, currentPage: total, status: "done", finishedAt: Date.now() };
@@ -2593,7 +2613,7 @@ Respond with ONLY a JSON object, no markdown:
     });
     const mins = bankMinutes();
     persist({
-      digitalShelf: digitalShelf.map((x) => (x.gid === reader.gid ? { ...x, pos: page } : x)),
+      digitalShelf: (latestRef.current.digitalShelf || []).map((x) => (x.gid === rd.gid ? { ...x, pos: page } : x)),
       readDays: delta > 0 ? withToday(readDays) : readDays,
       books: nextBooks,
       points: points + earned,
@@ -3182,7 +3202,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v47</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v48</span>
         </p>
       </header>
 
