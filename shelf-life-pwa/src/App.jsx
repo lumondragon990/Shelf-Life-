@@ -1700,6 +1700,13 @@ Respond with ONLY a JSON object, no markdown:
     return () => { alive = false; };
   }, []);
 
+  // If the reader closes by any route, or the tab changes, nothing keeps talking
+  useEffect(() => {
+    if (!reader) stopAllSpeech();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reader === null]);
+  useEffect(() => () => { try { window.speechSynthesis.cancel(); } catch { /* noop */ } }, []);
+
   const persist = (patch) => {
     const next = { ...latestRef.current, ...patch };
     // Any update to the active class flows into the teacher's class list
@@ -2146,37 +2153,65 @@ Respond with ONLY a JSON object, no markdown:
     }
   };
   // ----- Premium narration: a studio voice, cached per page so it's paid once -----
+  // Every audio request carries a generation number. Stopping bumps it, so a
+  // narration that finishes downloading AFTER you pressed stop is discarded
+  // instead of playing over the top of whatever you did next.
+  const audioGen = useRef(0);
+
   const stopAudio = () => {
+    audioGen.current += 1;                    // invalidate anything in flight
     const a = window.__slAudio;
-    if (a) { try { a.pause(); a.currentTime = 0; } catch { /* noop */ } }
+    if (a) {
+      try { a.pause(); a.currentTime = 0; a.src = ""; } catch { /* noop */ }
+      if (a.__url) { try { URL.revokeObjectURL(a.__url); } catch { /* noop */ } }
+    }
     window.__slAudio = null;
     setAudioBusy(false);
+  };
+
+  // Silence everything the app can make sound with, in one call.
+  const stopAllSpeech = () => {
+    stopAudio();
+    try { window.speechSynthesis.cancel(); } catch { /* noop */ }
+    window.__slU = null;
+    setReadAlong({ on: false, char: -1 });
   };
 
   // Try the studio voice for any audio the app makes. Returns false if it
   // can't, so the caller falls back to the device voice.
   const playStudio = async (opts) => {
     if (!premiumVoice) return false;
+    stopAllSpeech();                       // never layer on top of existing audio
+    const myGen = audioGen.current;        // claim this generation
+    setAudioBusy(true);
     try {
       const v = voicePref === "male" ? "m" : "f";
-      let r;
-      if (opts.word) {
-        r = await fetch(`/api/speak?word=${encodeURIComponent(opts.word)}&voice=${v}`);
-      } else {
-        r = await fetch("/api/speak", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: String(opts.text || "").slice(0, 4000), voice: v }),
-        });
-      }
-      if (!r.ok) return false;
-      const audio = new Audio(URL.createObjectURL(await r.blob()));
-      stopAudio();
+      const r = opts.word
+        ? await fetch(`/api/speak?word=${encodeURIComponent(opts.word)}&voice=${v}`)
+        : await fetch("/api/speak", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: String(opts.text || "").slice(0, 4000), voice: v }),
+          });
+      if (audioGen.current !== myGen) return true;   // user stopped: drop it, don't fall back
+      if (!r.ok) { setAudioBusy(false); return false; }
+      const blob = await r.blob();
+      if (audioGen.current !== myGen) return true;
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.__url = url;
       window.__slAudio = audio;
-      audio.onended = () => { window.__slAudio = null; };
+      audio.onended = () => {
+        if (audio.__url) { try { URL.revokeObjectURL(audio.__url); } catch { /* noop */ } }
+        window.__slAudio = null;
+        setAudioBusy(false);
+        setReadAlong({ on: false, char: -1 });
+      };
+      audio.onerror = () => { setAudioBusy(false); setReadAlong({ on: false, char: -1 }); };
       await audio.play();
       return true;
     } catch {
+      setAudioBusy(false);
       return false;
     }
   };
@@ -2298,13 +2333,22 @@ Respond with ONLY a JSON object, no markdown:
     const page = reader.pages[reader.page];
     const { start } = sentenceAt(page, charIdx);
     saveMark(start);
+    stopAllSpeech();
+    const myGen = audioGen.current;
     const ok = await speakRangeStudio(start, page.length);
-    if (!ok) speakRange(start, page.length);
+    if (!ok && audioGen.current === myGen) speakRange(start, page.length);
   };
 
   // ----- Word helper: tap a word to hear it and see its meaning -----
   const speakWord = (word) => {
-    if (premiumVoice) { playStudio({ word }).then((ok) => { if (!ok) deviceSpeakWord(word); }); return; }
+    stopAllSpeech();
+    if (premiumVoice) {
+      const myGen = audioGen.current;
+      playStudio({ word }).then((ok) => {
+        if (!ok && audioGen.current === myGen) deviceSpeakWord(word);
+      });
+      return;
+    }
     deviceSpeakWord(word);
   };
 
@@ -2458,8 +2502,7 @@ Respond with ONLY a JSON object, no markdown:
 
   const turnPage = (delta) => {
     if (!reader?.pages?.length) return;
-    stopAudio();
-    stopReadAlong();
+    stopAllSpeech();
     const total = reader.pages.length;
     const page = Math.max(0, Math.min(total - 1, reader.page + delta));
     setReader({ ...reader, page });
@@ -3065,7 +3108,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v45</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v46</span>
         </p>
       </header>
 
@@ -6483,7 +6526,7 @@ Respond with ONLY a JSON object, no markdown:
                   : "Voice: tap to change (device / female / male)"}
                 style={{ ...ghostBtn, padding: "4px 11px", fontSize: premiumVoice ? 12.5 : 15, whiteSpace: "nowrap" }}
                 onClick={() => {
-                  stopAudio(); stopReadAlong();
+                  stopAllSpeech();
                   if (premiumVoice) {
                     const next = voicePref === "male" ? "female" : "male";
                     persist({ voicePref2: next });
@@ -6500,7 +6543,7 @@ Respond with ONLY a JSON object, no markdown:
               </button>
               <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13 }}
                 onClick={async () => {
-                  if (readAlong.on || audioBusy) { stopAudio(); stopReadAlong(); return; }
+                  if (readAlong.on || audioBusy) { stopAllSpeech(); return; }
                   if (premiumVoice) { const ok = await playPremium(); if (ok) return; }
                   startReadAlong();
                 }}>
@@ -6515,7 +6558,7 @@ Respond with ONLY a JSON object, no markdown:
                 title={premiumVoice ? "Studio voice on — tap for the device voice" : "Studio voice off — tap for the natural narrator"}
                 style={{ ...(premiumVoice ? btn(T.gold) : ghostBtn), padding: "4px 10px", fontSize: 12.5 }}
                 onClick={() => {
-                  stopAudio(); stopReadAlong();
+                  stopAllSpeech();
                   const on = !premiumVoice;
                   setPremiumVoice(on);
                   if (on && voicePref === "system") persist({ voicePref2: "female" });
@@ -6531,7 +6574,7 @@ Respond with ONLY a JSON object, no markdown:
               </button>
               <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
               <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
-              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopAudio(); stopReadAlong(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
+              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopAllSpeech(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); stopAllSpeech(); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
             </div>
           </div>
 
@@ -6585,8 +6628,13 @@ Respond with ONLY a JSON object, no markdown:
                       <div key={pi} style={{ marginBottom: 16, whiteSpace: "pre-wrap" }}>
                         <button
                           aria-label="Listen to this paragraph"
-                          title="Listen to this paragraph"
-                          onClick={async () => { const ok = await speakRangeStudio(para.start, para.end); if (!ok) speakRange(para.start, para.end); }}
+                          title={audioBusy ? "Loading the narration…" : "Listen to this paragraph"}
+                          onClick={async () => {
+                            stopAllSpeech();
+                            const myGen = audioGen.current;
+                            const ok = await speakRangeStudio(para.start, para.end);
+                            if (!ok && audioGen.current === myGen) speakRange(para.start, para.end);
+                          }}
                           style={{
                             background: "none", border: "none", cursor: "pointer",
                             fontSize: Math.max(12, readerFont - 4), opacity: 0.45,
@@ -6669,7 +6717,9 @@ Respond with ONLY a JSON object, no markdown:
                   {wordCard.pos && <em style={{ marginLeft: 8, color: T.blue, fontSize: 13 }}>{wordCard.pos}</em>}
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button style={{ ...ghostBtn, padding: "5px 12px", fontSize: 13 }} onClick={() => speakWord(wordCard.word)}>🔊 Hear it</button>
+                  <button style={{ ...ghostBtn, padding: "5px 12px", fontSize: 13 }} disabled={audioBusy} onClick={() => speakWord(wordCard.word)}>
+                    {audioBusy ? "🔊 …" : "🔊 Hear it"}
+                  </button>
                   <button aria-label="Close" style={{ background: "none", border: "none", color: T.inkSoft, cursor: "pointer", fontSize: 16 }} onClick={() => setWordCard(null)}>✕</button>
                 </div>
               </div>
