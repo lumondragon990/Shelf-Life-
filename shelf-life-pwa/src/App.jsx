@@ -2169,8 +2169,12 @@ Respond with ONLY a JSON object, no markdown:
     setAudioBusy(false);
   };
 
+  // When true, finishing a page rolls straight into the next one.
+  const autoRead = useRef(false);
+
   // Silence everything the app can make sound with, in one call.
   const stopAllSpeech = () => {
+    autoRead.current = false;
     stopAudio();
     try { window.speechSynthesis.cancel(); } catch { /* noop */ }
     window.__slU = null;
@@ -2243,6 +2247,79 @@ Respond with ONLY a JSON object, no markdown:
       setAudioBusy(false);
       flash("Studio voice unavailable — using the device voice");
       return false;
+    }
+  };
+
+  // ----- Continuous narration: keeps going page after page until you stop it -----
+  const readOnFrom = async (fromChar) => {
+    if (!reader?.pages?.length) return;
+    stopAllSpeech();
+    autoRead.current = true;
+    const myGen = audioGen.current;
+    const page = reader.pages[reader.page];
+    const isWholePage = fromChar <= 0;
+
+    const onFinished = () => {
+      if (!autoRead.current || audioGen.current !== myGen) return;
+      if (reader.page >= reader.pages.length - 1) {
+        autoRead.current = false;
+        flash("That's the end — nicely done 📖");
+        return;
+      }
+      setTimeout(() => { turnPage(1, true); setTimeout(() => readOnFrom(0), 80); }, 150);
+    };
+
+    if (premiumVoice) {
+      setAudioBusy(true);
+      try {
+        const v = voicePref === "male" ? "m" : "f";
+        const canCache = isWholePage && !reader.isText && !String(reader.gid).startsWith("text:");
+        const r = canCache
+          ? await fetch(`/api/speak?gid=${encodeURIComponent(reader.gid)}&page=${reader.page}&voice=${v}`)
+          : await fetch("/api/speak", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: page.slice(fromChar).slice(0, 4000), voice: v }),
+            });
+        if (audioGen.current !== myGen) return;
+        if (r.ok) {
+          const url = URL.createObjectURL(await r.blob());
+          if (audioGen.current !== myGen) { try { URL.revokeObjectURL(url); } catch { /* noop */ } return; }
+          const audio = new Audio(url);
+          audio.__url = url;
+          window.__slAudio = audio;
+          setReadAlong({ on: true, char: -1 });
+          audio.onended = () => {
+            try { URL.revokeObjectURL(url); } catch { /* noop */ }
+            window.__slAudio = null; setAudioBusy(false);
+            setReadAlong({ on: false, char: -1 });
+            onFinished();
+          };
+          audio.onerror = () => { setAudioBusy(false); setReadAlong({ on: false, char: -1 }); };
+          await audio.play();
+          return;
+        }
+      } catch { /* fall through to device voice */ }
+      setAudioBusy(false);
+      if (audioGen.current !== myGen) return;
+    }
+
+    try {
+      const text = page.slice(fromChar);
+      const u = new SpeechSynthesisUtterance(text);
+      const accents = (text.match(/[áéíóúñü]/gi) || []).length;
+      u.lang = accents > 4 ? "es-ES" : "en-US";
+      const bv = pickVoice(u.lang);
+      if (bv) u.voice = bv;
+      u.rate = 0.92; u.pitch = 1.0;
+      u.onboundary = (e) => {
+        if (e.charIndex !== undefined) setReadAlong({ on: true, char: fromChar + e.charIndex });
+      };
+      u.onend = () => { setReadAlong({ on: false, char: -1 }); onFinished(); };
+      u.onerror = () => setReadAlong({ on: false, char: -1 });
+      setReadAlong({ on: true, char: fromChar });
+      safeSpeak(u);
+    } catch {
+      setReadAlong({ on: false, char: -1 });
     }
   };
 
@@ -2333,10 +2410,7 @@ Respond with ONLY a JSON object, no markdown:
     const page = reader.pages[reader.page];
     const { start } = sentenceAt(page, charIdx);
     saveMark(start);
-    stopAllSpeech();
-    const myGen = audioGen.current;
-    const ok = await speakRangeStudio(start, page.length);
-    if (!ok && audioGen.current === myGen) speakRange(start, page.length);
+    readOnFrom(start);
   };
 
   // ----- Word helper: tap a word to hear it and see its meaning -----
@@ -2500,9 +2574,9 @@ Respond with ONLY a JSON object, no markdown:
     return mins;
   };
 
-  const turnPage = (delta) => {
+  const turnPage = (delta, keepAudio) => {
     if (!reader?.pages?.length) return;
-    stopAllSpeech();
+    if (!keepAudio) stopAllSpeech();
     const total = reader.pages.length;
     const page = Math.max(0, Math.min(total - 1, reader.page + delta));
     setReader({ ...reader, page });
@@ -3108,7 +3182,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v46</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v47</span>
         </p>
       </header>
 
@@ -6542,10 +6616,9 @@ Respond with ONLY a JSON object, no markdown:
                   : (voicePref === "system" ? "🔈" : voicePref === "female" ? "👩" : "👨")}
               </button>
               <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13 }}
-                onClick={async () => {
+                onClick={() => {
                   if (readAlong.on || audioBusy) { stopAllSpeech(); return; }
-                  if (premiumVoice) { const ok = await playPremium(); if (ok) return; }
-                  startReadAlong();
+                  readOnFrom(0);
                 }}>
                 {audioBusy ? "…" : readAlong.on ? "⏹ Stop" : "🔊 Read to me"}
               </button>
@@ -6585,8 +6658,8 @@ Respond with ONLY a JSON object, no markdown:
               <div className="sl-page">
                 <div style={{ fontSize: 11.5, color: T.inkSoft, textAlign: "center", marginBottom: 14 }}>
                   {tapMode === "define"
-                    ? "💡 Tap any word for its meaning · tap a 🔊 to hear a paragraph · your spot is saved as you go"
-                    : "▶ Tap any sentence to start reading aloud from there"}
+                    ? "💡 Tap any word for its meaning · tap a 🔊 to start reading aloud from there — it keeps going, page after page"
+                    : "▶ Tap any sentence to start reading aloud from there — it keeps going until you stop it"}
                 </div>
                 <div style={{
                   fontSize: readerFont,
@@ -6629,12 +6702,7 @@ Respond with ONLY a JSON object, no markdown:
                         <button
                           aria-label="Listen to this paragraph"
                           title={audioBusy ? "Loading the narration…" : "Listen to this paragraph"}
-                          onClick={async () => {
-                            stopAllSpeech();
-                            const myGen = audioGen.current;
-                            const ok = await speakRangeStudio(para.start, para.end);
-                            if (!ok && audioGen.current === myGen) speakRange(para.start, para.end);
-                          }}
+                          onClick={() => readOnFrom(para.start)}
                           style={{
                             background: "none", border: "none", cursor: "pointer",
                             fontSize: Math.max(12, readerFont - 4), opacity: 0.45,
