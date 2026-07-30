@@ -662,9 +662,9 @@ async function loadShelf() {
   try {
     const r = await storage.get("shelf-data-v1");
     const d = r ? JSON.parse(r.value) : {};
-    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "female", studioPref: d.studioPref === undefined ? null : d.studioPref, newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, readLog: d.readLog || [], fluency: d.fluency || [], classes: d.classes || [], family: d.family || null, famSeen: d.famSeen || 0, lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
+    return { books: d.books || [], readDays: d.readDays || [], goalDays: d.goalDays || 4, quiz: d.quiz || null, points: d.points || 0, quizResults: d.quizResults || {}, classroom: d.classroom || null, teaching: d.teaching || null, digitalShelf: d.digitalShelf || [], myWords: d.myWords || [], voicePref: d.voicePref2 || "female", studioPref: d.studioPref === undefined ? null : d.studioPref, newsDigest: d.newsDigest || null, quizNudgeDismissed: d.quizNudgeDismissed || false, readLog: d.readLog || [], fluency: d.fluency || [], classes: d.classes || [], partner: d.partner || null, family: d.family || null, famSeen: d.famSeen || 0, lastSpotlight: d.lastSpotlight || "", onboarded: d.onboarded || false, userName: d.userName || "", role: d.role || "" };
   } catch {
-    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "female", studioPref: null, newsDigest: null, quizNudgeDismissed: false, readLog: [], fluency: [], classes: [], family: null, famSeen: 0, lastSpotlight: "", onboarded: false, userName: "", role: "" };
+    return { books: [], readDays: [], goalDays: 4, quiz: null, points: 0, quizResults: {}, classroom: null, teaching: null, digitalShelf: [], myWords: [], voicePref: "female", studioPref: null, newsDigest: null, quizNudgeDismissed: false, readLog: [], fluency: [], classes: [], partner: null, family: null, famSeen: 0, lastSpotlight: "", onboarded: false, userName: "", role: "" };
   }
 }
 async function saveShelf(data) {
@@ -874,6 +874,13 @@ export default function ShelfLife() {
   const [quizNudgeDismissed, setQuizNudgeDismissed] = useState(false);
   const [readLog, setReadLog] = useState([]); // [{d, min, ch, qz}] — the log nobody has to fill out
   const [fluency, setFluency] = useState([]); // [{d, wcpm, acc, words}] — oral reading fluency over time
+  const [partner, setPartner] = useState(null); // a bookstore or library running offers
+  const [partnerForm, setPartnerForm] = useState({ name: "", kind: "bookstore", city: "", blurb: "", address: "" });
+  const [offerForm, setOfferForm] = useState({ prize: "", metric: "chapters", need: "", codes: "", note: "" });
+  const [showOfferForm, setShowOfferForm] = useState(false);
+  const [partnerCodeInput, setPartnerCodeInput] = useState("");
+  const [partnerBusy, setPartnerBusy] = useState(false);
+  const [foundPartner, setFoundPartner] = useState(null);
   const [classes, setClasses] = useState([]); // every class this teacher runs
   const [family, setFamily] = useState(null); // parent view: {code, classCode, student, className, teacher, book, chapters}
   const [famSeen, setFamSeen] = useState(0); // timestamp of last message read
@@ -966,6 +973,7 @@ export default function ShelfLife() {
       setQuizNudgeDismissed(d.quizNudgeDismissed || false);
       setReadLog(d.readLog || []);
       setFluency(d.fluency || []);
+      setPartner(d.partner || null);
       setFamily(d.family || null);
       setFamSeen(d.famSeen || 0);
       const existing = d.classes || [];
@@ -1326,6 +1334,100 @@ export default function ShelfLife() {
       const text = await askTool(`Write a short, warm note from ${teaching.teacher} to the family of ${r.name} about their reading. Facts: reading "${teaching.book}", on chapter ${r.chapter || 0} of ${teaching.chapters}, passed ${qs.filter((q) => q.passed).length} of ${qs.length || 0} chapter checks${r.minWeek ? `, read ${r.minWeek} minutes in the app this week` : ""}${think ? `. Something they wrote: "${think}"` : ""}. 3-4 sentences. Lead with something genuinely good. If there's a concern, phrase it as an invitation, never a complaint. End with one specific thing the family can do at home in five minutes. ${lang === "es" ? "Write the entire note in warm, natural Spanish." : "Write in English."} Respond with only the note text.`, 400);
       setTool({ kind: "note", loading: false, forName: r.name, text, lang });
     } catch { flash("Couldn't write the note — try again"); setTool(null); }
+  };
+
+  // ----- Bookstores & libraries: set up a shop, publish offers, get found by teachers -----
+  const createPartner = async () => {
+    if (!partnerForm.name.trim() || !partnerForm.city.trim()) return;
+    setPartnerBusy(true);
+    let code = makeClassCode();
+    const rec = {
+      code, name: partnerForm.name.trim().slice(0, 60),
+      kind: partnerForm.kind, city: partnerForm.city.trim().slice(0, 40),
+      blurb: partnerForm.blurb.trim().slice(0, 160),
+      address: partnerForm.address.trim().slice(0, 120),
+      offers: [], createdAt: Date.now(),
+    };
+    try {
+      await storage.set(`partner:${code}`, JSON.stringify(rec), true);
+      persist({ partner: rec });
+      flash(`You're set up! Share code ${code} with teachers 🎁`);
+    } catch { flash("Couldn't create your shop — try again"); }
+    setPartnerBusy(false);
+  };
+
+  const savePartner = async (updated) => {
+    try {
+      await storage.set(`partner:${updated.code}`, JSON.stringify(updated), true);
+      persist({ partner: updated });
+      return true;
+    } catch { flash("Couldn't save — try again"); return false; }
+  };
+
+  const addOffer = async () => {
+    if (!partner || !offerForm.prize.trim() || !parseInt(offerForm.need)) return;
+    const codes = offerForm.codes.split(/[\s,]+/).map((c) => c.trim()).filter(Boolean).slice(0, 200);
+    const offer = {
+      id: uid(),
+      prize: offerForm.prize.trim().slice(0, 90),
+      metric: offerForm.metric,
+      need: Math.max(1, Math.min(99, parseInt(offerForm.need))),
+      codes, used: 0,
+      note: offerForm.note.trim().slice(0, 120),
+    };
+    const ok = await savePartner({ ...partner, offers: [...(partner.offers || []), offer] });
+    if (ok) {
+      setOfferForm({ prize: "", metric: "chapters", need: "", codes: "", note: "" });
+      setShowOfferForm(false);
+      flash("Offer published — teachers with your code can add it now 🎁");
+    }
+  };
+
+  const removeOffer = (id) => {
+    if (!partner) return;
+    savePartner({ ...partner, offers: (partner.offers || []).filter((o) => o.id !== id) });
+  };
+
+  // Teachers look up a partner and attach one of their offers to a class
+  const lookupPartner = async () => {
+    const code = partnerCodeInput.trim().toUpperCase();
+    if (code.length < 4) return;
+    setPartnerBusy(true);
+    setFoundPartner(null);
+    try {
+      const rec = JSON.parse((await storage.get(`partner:${code}`, true)).value);
+      if (!rec?.offers?.length) flash("That shop hasn't published any offers yet");
+      setFoundPartner(rec);
+    } catch {
+      flash("No shop found with that code — check with them");
+    }
+    setPartnerBusy(false);
+  };
+
+  const attachPartnerOffer = async (shop, offer) => {
+    if (!teaching) return;
+    const claimed = offer.codes && offer.codes.length ? offer.codes[0] : "";
+    const reward = {
+      id: uid(),
+      prize: `${offer.prize} — ${shop.name}`,
+      metric: offer.metric,
+      need: offer.need,
+      code: claimed,
+      partner: shop.name,
+      partnerCity: shop.city,
+    };
+    const updated = { ...teaching, rewards: [...(teaching.rewards || []), reward] };
+    try {
+      await createClassRecord(updated);
+      persist({ teaching: updated });
+      // hand that code out so two classes don't get the same one
+      if (offer.codes?.length) {
+        const rest = { ...shop, offers: shop.offers.map((o) => o.id === offer.id ? { ...o, codes: o.codes.slice(1), used: (o.used || 0) + 1 } : o) };
+        await storage.set(`partner:${shop.code}`, JSON.stringify(rest), true);
+        setFoundPartner(rest);
+      }
+      flash(`Added — your class can now earn "${offer.prize}" at ${shop.name} 🎁`);
+    } catch { flash("Couldn't add it — try again"); }
   };
 
   // ----- Multiple classes: switch between them, close one without losing the rest -----
@@ -1689,7 +1791,7 @@ Respond with ONLY a JSON object, no markdown:
   // Live snapshot of ALL persisted state, refreshed every render — persist()
   // reads from here so a save can never overwrite fields with stale values.
   const latestRef = useRef({});
-  latestRef.current = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, myWords, voicePref, newsDigest, quizNudgeDismissed, readLog, fluency, classes, family, famSeen, lastSpotlight, onboarded, userName, role };
+  latestRef.current = { books, readDays, goalDays, quiz, points, quizResults, classroom, teaching, digitalShelf, myWords, voicePref, newsDigest, quizNudgeDismissed, readLog, fluency, classes, partner, family, famSeen, lastSpotlight, onboarded, userName, role };
 
   useEffect(() => {
     let alive = true;
@@ -1737,6 +1839,7 @@ Respond with ONLY a JSON object, no markdown:
     setReadLog(next.readLog || []);
     setFluency(next.fluency || []);
     setClasses(next.classes || []);
+    setPartner(next.partner !== undefined ? next.partner : null);
     setFamily(next.family !== undefined ? next.family : null);
     setFamSeen(next.famSeen || 0);
     setLastSpotlight(next.lastSpotlight || "");
@@ -3202,7 +3305,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v48</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v49</span>
         </p>
       </header>
 
@@ -4511,6 +4614,14 @@ Respond with ONLY a JSON object, no markdown:
                     <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 19, color: T.ink }}>We're a family</div>
                     <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }}>Read together at home — set family rewards like movie night</div>
                   </button>
+                  <button onClick={() => setClassMode("partner")} style={{
+                    flex: "1 1 240px", background: T.card, border: `2px solid ${T.gold}`, borderRadius: 12,
+                    padding: "22px 18px", cursor: "pointer", textAlign: "center", fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                  }}>
+                    <div style={{ fontSize: 34 }}>🏪</div>
+                    <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 19, color: T.ink }}>Bookstore or library</div>
+                    <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }}>Offer rewards to local classrooms and bring readers through your door</div>
+                  </button>
                   <button onClick={() => setClassMode("family-join")} style={{
                     flex: "1 1 240px", background: T.card, border: `2px solid ${T.blue}`, borderRadius: 12,
                     padding: "22px 18px", cursor: "pointer", textAlign: "center", fontFamily: "'Atkinson Hyperlegible', sans-serif",
@@ -4613,6 +4724,117 @@ Respond with ONLY a JSON object, no markdown:
                   <button style={ghostBtn} onClick={() => setClassMode(null)}>Back</button>
                 </div>
               </Ruled>
+            )}
+
+            {/* Bookstore / library */}
+            {classMode === "partner" && !partner && (
+              <Ruled>
+                <div style={{ fontWeight: 700, marginBottom: 3, lineHeight: "28px" }}>Set up your shop 🏪</div>
+                <div style={{ fontSize: 12.5, color: T.inkSoft, lineHeight: "26px", paddingBottom: 6 }}>
+                  Publish an offer, share your code with local teachers, and students unlock it by
+                  <strong> provably reading</strong> — chapters finished or quizzes passed, verified in the app. Free, and you decide what you give away.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginBottom: 8 }}>
+                  <input style={input} maxLength={60} placeholder="Shop or library name *"
+                    value={partnerForm.name} onChange={(e) => setPartnerForm({ ...partnerForm, name: e.target.value })} />
+                  <select style={input} value={partnerForm.kind} onChange={(e) => setPartnerForm({ ...partnerForm, kind: e.target.value })}>
+                    <option value="bookstore">Independent bookstore</option>
+                    <option value="library">Library</option>
+                    <option value="other">Literacy program / other</option>
+                  </select>
+                  <input style={input} maxLength={40} placeholder="City *"
+                    value={partnerForm.city} onChange={(e) => setPartnerForm({ ...partnerForm, city: e.target.value })} />
+                  <input style={input} maxLength={120} placeholder="Address (optional)"
+                    value={partnerForm.address} onChange={(e) => setPartnerForm({ ...partnerForm, address: e.target.value })} />
+                  <input style={{ ...input, gridColumn: "1 / -1" }} maxLength={160} placeholder="One line about you (optional)"
+                    value={partnerForm.blurb} onChange={(e) => setPartnerForm({ ...partnerForm, blurb: e.target.value })} />
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button style={{ ...btn(T.green), opacity: partnerForm.name.trim() && partnerForm.city.trim() && !partnerBusy ? 1 : 0.5 }}
+                    disabled={!partnerForm.name.trim() || !partnerForm.city.trim() || partnerBusy} onClick={createPartner}>
+                    {partnerBusy ? "Setting up…" : "Create my shop"}
+                  </button>
+                  <button style={ghostBtn} onClick={() => setClassMode(null)}>Back</button>
+                </div>
+              </Ruled>
+            )}
+
+            {partner && (
+              <div>
+                <div style={{ background: T.card, border: `2px solid ${T.gold}`, borderRadius: 14, padding: "16px 18px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, letterSpacing: "0.14em", color: T.gold, fontWeight: 700 }}>
+                    {partner.kind === "library" ? "LIBRARY PARTNER" : partner.kind === "bookstore" ? "BOOKSHOP PARTNER" : "LITERACY PARTNER"}
+                  </div>
+                  <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 24 }}>{partner.name}</div>
+                  <div style={{ fontSize: 13, color: T.inkSoft }}>{partner.city}{partner.address ? ` · ${partner.address}` : ""}</div>
+                  {partner.blurb && <div style={{ fontSize: 13.5, marginTop: 4 }}>{partner.blurb}</div>}
+                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12.5, color: T.inkSoft }}>Give teachers this code:</span>
+                    <strong style={{ fontFamily: "'Fraunces', serif", fontSize: 24, letterSpacing: 4, color: T.stamp }}>{partner.code}</strong>
+                    <button style={{ ...ghostBtn, padding: "3px 11px", fontSize: 12 }} onClick={() => copyCode(partner.code)}>
+                      {copied === partner.code ? "Copied ✓" : "Copy"}
+                    </button>
+                  </div>
+                </div>
+
+                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 19, margin: "0 0 4px" }}>Your offers</h3>
+                <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "0 0 10px" }}>
+                  Codes are handed out one at a time, so you always know how many are in the wild.
+                </p>
+                {(partner.offers || []).map((o) => (
+                  <div key={o.id} style={{ border: `1px solid ${T.rule}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8, background: T.paper }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                      <div>
+                        <strong>{o.prize}</strong>
+                        <div style={{ fontSize: 12.5, color: T.inkSoft }}>
+                          Unlocks at {o.need} {o.metric === "chapters" ? "chapters read" : "quizzes passed"}
+                          {" · "}{(o.codes || []).length} code{(o.codes || []).length !== 1 ? "s" : ""} left
+                          {o.used ? ` · ${o.used} claimed by classes` : ""}
+                        </div>
+                        {o.note && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2 }}>{o.note}</div>}
+                      </div>
+                      <button aria-label="Remove offer" style={{ background: "none", border: "none", color: T.stamp, cursor: "pointer", fontSize: 15 }}
+                        onClick={() => removeOffer(o.id)}>✕</button>
+                    </div>
+                  </div>
+                ))}
+
+                {!showOfferForm ? (
+                  <button style={btn(T.green)} onClick={() => setShowOfferForm(true)}>+ Publish an offer</button>
+                ) : (
+                  <Ruled>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 8 }}>
+                      <input style={{ ...input, gridColumn: "1 / -1" }} maxLength={90}
+                        placeholder="What do they get? * e.g. $5 off any book"
+                        value={offerForm.prize} onChange={(e) => setOfferForm({ ...offerForm, prize: e.target.value })} />
+                      <select style={input} value={offerForm.metric} onChange={(e) => setOfferForm({ ...offerForm, metric: e.target.value })}>
+                        <option value="chapters">Chapters read</option>
+                        <option value="quizzes">Quizzes passed</option>
+                      </select>
+                      <input style={input} inputMode="numeric" placeholder="How many? *"
+                        value={offerForm.need} onChange={(e) => setOfferForm({ ...offerForm, need: e.target.value.replace(/\D/g, "") })} />
+                      <input style={{ ...input, gridColumn: "1 / -1" }} maxLength={2000}
+                        placeholder="Coupon codes, separated by spaces or commas (optional)"
+                        value={offerForm.codes} onChange={(e) => setOfferForm({ ...offerForm, codes: e.target.value })} />
+                      <input style={{ ...input, gridColumn: "1 / -1" }} maxLength={120}
+                        placeholder="Anything they should know? e.g. Show at the register, one per family"
+                        value={offerForm.note} onChange={(e) => setOfferForm({ ...offerForm, note: e.target.value })} />
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button style={{ ...btn(T.green), opacity: offerForm.prize.trim() && parseInt(offerForm.need) ? 1 : 0.5 }}
+                        disabled={!offerForm.prize.trim() || !parseInt(offerForm.need)} onClick={addOffer}>
+                        Publish it
+                      </button>
+                      <button style={ghostBtn} onClick={() => setShowOfferForm(false)}>Cancel</button>
+                    </div>
+                  </Ruled>
+                )}
+
+                <button style={{ ...ghostBtn, marginTop: 14, borderColor: T.stamp, color: T.stamp }}
+                  onClick={() => { persist({ partner: null }); setClassMode(null); }}>
+                  Close my shop on this device
+                </button>
+              </div>
             )}
 
             {/* Family join */}
@@ -5425,6 +5647,48 @@ Respond with ONLY a JSON object, no markdown:
                         onClick={() => deleteClassReward(r.id)}>✕</button>
                     </div>
                   ))}
+                  {/* Local partner offers */}
+                  <div style={{ background: "#FDF8EE", border: `1.5px solid ${T.gold}`, borderRadius: 11, padding: "12px 15px", marginBottom: 12 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>🏪 Add a reward from a local bookshop or library</div>
+                    <div style={{ fontSize: 12.5, color: T.inkSoft, margin: "2px 0 8px" }}>
+                      Ask them for their Shelf Life code. Their offer becomes a class reward, and one coupon code is
+                      reserved for your class.
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <input style={{ ...input, flex: "0 1 170px", letterSpacing: 3, textTransform: "uppercase", fontWeight: 700 }}
+                        maxLength={6} placeholder="SHOP CODE" value={partnerCodeInput}
+                        onChange={(e) => setPartnerCodeInput(e.target.value.toUpperCase())} />
+                      <button style={{ ...btn(), opacity: partnerCodeInput.trim().length >= 4 && !partnerBusy ? 1 : 0.5 }}
+                        disabled={partnerCodeInput.trim().length < 4 || partnerBusy} onClick={lookupPartner}>
+                        {partnerBusy ? "Looking…" : "Find their offers"}
+                      </button>
+                    </div>
+                    {foundPartner && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16 }}>{foundPartner.name}</div>
+                        <div style={{ fontSize: 12.5, color: T.inkSoft }}>{foundPartner.city}{foundPartner.address ? ` · ${foundPartner.address}` : ""}</div>
+                        {(foundPartner.offers || []).length === 0 && (
+                          <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 6 }}>No offers published yet.</div>
+                        )}
+                        {(foundPartner.offers || []).map((o) => (
+                          <div key={o.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap", borderTop: `1px solid ${T.rule}`, padding: "8px 0" }}>
+                            <div>
+                              <strong style={{ fontSize: 14 }}>{o.prize}</strong>
+                              <div style={{ fontSize: 12.5, color: T.inkSoft }}>
+                                {o.need} {o.metric === "chapters" ? "chapters read" : "quizzes passed"}
+                                {o.codes?.length ? ` · ${o.codes.length} available` : " · no code needed"}
+                              </div>
+                            </div>
+                            <button style={{ ...btn(T.green), padding: "5px 13px", fontSize: 12.5 }}
+                              onClick={() => attachPartnerOffer(foundPartner, o)}>
+                              Add to my class
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   {!showRewardForm ? (
                     <button style={btn(T.green)} onClick={() => setShowRewardForm(true)}>+ Add a class reward</button>
                   ) : (
@@ -5779,7 +6043,8 @@ Respond with ONLY a JSON object, no markdown:
                           </div>
                           {unlocked && r.code && (
                             <div style={{ marginTop: 6, fontSize: 13 }}>
-                              Show your teacher — code: <strong style={{ color: T.green }}>{r.code}</strong>
+                              {r.partner ? <>Show this at <strong>{r.partner}</strong>{r.partnerCity ? ` (${r.partnerCity})` : ""} — code: </> : <>Show your teacher — code: </>}
+                              <strong style={{ color: T.green }}>{r.code}</strong>
                               <button style={{ ...ghostBtn, marginLeft: 8, padding: "2px 10px", fontSize: 11 }} onClick={() => copyCode(r.code)}>
                                 {copied === r.code ? "Copied ✓" : "Copy"}
                               </button>
