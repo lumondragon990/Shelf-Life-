@@ -29,6 +29,8 @@ const KEY_RULES = [
   { re: /^meetup:[A-Za-z0-9_.:-]{1,80}$/, list: true },                // meetups
   { re: /^sync:[A-Z0-9]{4,12}$/, list: false },                        // device sync payload
   { re: /^apprating:[A-Za-z0-9_.:-]{1,80}$/, list: false },            // write-only feedback
+  { re: /^partner:[A-Z0-9]{4,8}$/, list: false },          // a bookstore or library profile
+  { re: /^flag:[A-Za-z0-9_.:-]{1,80}$/, list: false },     // reader reports of a wrong free-book match
   { re: /^stats:readers$/, list: false },
 ];
 
