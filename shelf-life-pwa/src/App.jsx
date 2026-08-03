@@ -1216,19 +1216,90 @@ export default function ShelfLife() {
   };
 
   // ----- Family Link: parents follow their reader with a code — no email, no phone, no PII -----
-  const makeFamilyCode = (studentName) => {
-    if (!teaching) return;
+  const makeFamilyCode = async (studentName) => {
+    const name = (studentName || "").trim().slice(0, 30);
+    if (!teaching || !name) return null;
     const existing = teaching.family || {};
-    const found = Object.entries(existing).find(([, n]) => n === studentName);
+    // Same reader asked twice = same code (case-insensitive)
+    const found = Object.entries(existing).find(([, n]) => (n || "").toLowerCase() === name.toLowerCase());
     if (found) return found[0];
     let code = makeClassCode();
     while (existing[code]) code = makeClassCode();
-    const updated = { ...teaching, family: { ...existing, [code]: studentName } };
-    Promise.all([
-      createClassRecord(updated),
-      storage.set(`fam:${code}`, JSON.stringify({ classCode: teaching.code, student: studentName }), true),
-    ]).then(() => persist({ teaching: updated })).catch(() => flash("Couldn't create the code"));
-    return code;
+    const updated = { ...teaching, family: { ...existing, [code]: name } };
+    try {
+      await Promise.all([
+        createClassRecord(updated),
+        storage.set(`fam:${code}`, JSON.stringify({ classCode: teaching.code, student: name }), true),
+      ]);
+      persist({ teaching: updated });
+      return code;
+    } catch {
+      flash("Couldn't create the code — check your connection and try again");
+      return null;
+    }
+  };
+
+  // Teacher types any reader's name and gets a family code — works even
+  // before that reader has joined the class (the launch-day case).
+  const [famNameInput, setFamNameInput] = useState("");
+  const [famGenBusy, setFamGenBusy] = useState(false);
+  const generateFamilyCode = async () => {
+    if (famGenBusy || !famNameInput.trim()) return;
+    setFamGenBusy(true);
+    const c = await makeFamilyCode(famNameInput);
+    if (c) { flash(`Family code for ${famNameInput.trim()}: ${c} 💛`); setFamNameInput(""); }
+    setFamGenBusy(false);
+  };
+
+  // Parent side: write back to the teacher — same thread the teacher's notes live in
+  const [famDraft, setFamDraft] = useState("");
+  const sendFromFamily = async () => {
+    const text = famDraft.trim().slice(0, 400);
+    if (!family || !text || famBusy) return;
+    setFamBusy(true);
+    try {
+      const cur = await fetchFamilyMessages(family.classCode, family.student);
+      const next = [...(cur || []), { id: uid(), from: `${family.student}'s family`, who: "family", text, at: Date.now(), ack: 0 }].slice(-40);
+      await saveFamilyMessages(family.classCode, family.student, next);
+      setFamMsgs(next);
+      setFamDraft("");
+      flash(`Sent to ${family.teacher} ✉️`);
+    } catch { flash("Couldn't send — try again"); }
+    setFamBusy(false);
+  };
+
+  // Teacher side: one inbox for everything families have written back
+  const [famInbox, setFamInbox] = useState(null); // { studentName: msgs[] }
+  const [famInboxBusy, setFamInboxBusy] = useState(false);
+  const [famReplyDraft, setFamReplyDraft] = useState({});
+  const loadFamilyInbox = async () => {
+    if (!teaching || famInboxBusy) return;
+    setFamInboxBusy(true);
+    try {
+      const students = [...new Set([
+        ...Object.values(teaching.family || {}),
+        ...((roster || []).map((s) => s.name)),
+      ])].filter(Boolean).slice(0, 40);
+      const out = {};
+      await Promise.all(students.map(async (s) => {
+        try {
+          const m = await fetchFamilyMessages(teaching.code, s);
+          if (m && m.length) out[s] = m;
+        } catch { /* skip this thread */ }
+      }));
+      setFamInbox(out);
+    } catch { flash("Couldn't load family messages — try again"); }
+    setFamInboxBusy(false);
+  };
+  const replyToFamily = async (studentName) => {
+    const text = (famReplyDraft[studentName] || "").trim().slice(0, 400);
+    if (!text) return;
+    await sendToFamily(studentName, text);
+    setFamReplyDraft((d) => ({ ...d, [studentName]: "" }));
+    try {
+      const m = await fetchFamilyMessages(teaching.code, studentName);
+      setFamInbox((prev) => ({ ...(prev || {}), [studentName]: m || [] }));
+    } catch { /* thread refreshes next check */ }
   };
 
   const joinFamily = async () => {
@@ -1273,7 +1344,7 @@ export default function ShelfLife() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  const unreadFamily = famMsgs.filter((m) => m.at > (famSeen || 0)).length;
+  const unreadFamily = famMsgs.filter((m) => m.who !== "family" && m.at > (famSeen || 0)).length;
 
   const ackMessage = async (id) => {
     const next = famMsgs.map((m) => (m.id === id ? { ...m, ack: Date.now() } : m));
@@ -3443,7 +3514,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v53</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v55</span>
         </p>
       </header>
 
@@ -4786,10 +4857,12 @@ Respond with ONLY a JSON object, no markdown:
             )}
 
             {/* Teacher setup */}
-            {classMode === "teacher-setup" && !teaching && (
+            {classMode === "teacher-setup" && (
               <Ruled>
                 <div style={{ fontWeight: 700, marginBottom: 8, lineHeight: "28px" }}>
-                  {classForm.kind === "family" ? "Set up your family circle" : "Set up your class"}
+                  {classForm.kind === "family"
+                    ? (teaching ? "Set up a new family circle" : "Set up your family circle")
+                    : (teaching ? "Set up a new class — your other classes stay right where they are" : "Set up your class")}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 10 }}>
                   <input style={input} placeholder={classForm.kind === "family" ? "Your name * (e.g. Mom, Papá Luis)" : "Your name * (e.g. Ms. Rivera)"} maxLength={40} value={classForm.teacher}
@@ -5037,27 +5110,43 @@ Respond with ONLY a JSON object, no markdown:
                   )}
 
                   <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18, margin: "0 0 8px" }}>
-                    Messages from {family.teacher}
+                    Messages with {family.teacher}
                     {unreadFamily > 0 && <span style={{ fontSize: 12, background: T.stamp, color: "#FFF", borderRadius: 999, padding: "2px 9px", marginLeft: 8 }}>{unreadFamily} new</span>}
                   </h3>
-                  {famMsgs.length === 0 && <p style={{ fontSize: 13.5, color: T.inkSoft }}>No messages yet — they'll appear here.</p>}
+                  {famMsgs.length === 0 && <p style={{ fontSize: 13.5, color: T.inkSoft }}>No messages yet — say hello below, or notes from {family.teacher} will appear here.</p>}
                   {famMsgs.slice().reverse().map((m) => (
                     <div key={m.id} style={{
-                      background: m.at > (famSeen || 0) ? "#F5F8FC" : T.paper,
-                      border: `1px solid ${m.at > (famSeen || 0) ? T.blue : T.rule}`,
+                      background: m.who === "family" ? "#F0F5F0" : m.at > (famSeen || 0) ? "#F5F8FC" : T.paper,
+                      border: `1px solid ${m.who === "family" ? T.green : m.at > (famSeen || 0) ? T.blue : T.rule}`,
                       borderRadius: 10, padding: "11px 14px", marginBottom: 8,
                     }}>
                       <div style={{ fontSize: 11.5, color: T.inkSoft }}>
-                        {new Date(m.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · {m.from}
+                        {new Date(m.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · {m.who === "family" ? "You" : m.from}
                       </div>
                       <div style={{ fontSize: 14.5, marginTop: 3, whiteSpace: "pre-wrap" }}>{m.text}</div>
-                      {m.ack ? (
+                      {m.who !== "family" && (m.ack ? (
                         <div style={{ fontSize: 11.5, color: T.green, marginTop: 5 }}>✓ You let the teacher know you saw this</div>
                       ) : (
                         <button style={{ ...ghostBtn, marginTop: 6, padding: "3px 12px", fontSize: 12 }} onClick={() => ackMessage(m.id)}>👍 Got it</button>
-                      )}
+                      ))}
                     </div>
                   ))}
+
+                  {/* Write back to the teacher */}
+                  <div style={{ background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: 10, padding: "10px 12px", marginTop: 4 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>✏️ Write to {family.teacher}</div>
+                    <textarea
+                      style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 60, resize: "vertical", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                      placeholder="A question, a heads-up, or just how reading is going at home…"
+                      maxLength={400} value={famDraft} onChange={(e) => setFamDraft(e.target.value)} />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                      <span style={{ fontSize: 11, color: T.inkSoft }}>{famDraft.length}/400</span>
+                      <button style={{ ...btn(T.green), padding: "6px 16px", fontSize: 13, opacity: famDraft.trim() && !famBusy ? 1 : 0.5 }}
+                        disabled={!famDraft.trim() || famBusy} onClick={sendFromFamily}>
+                        {famBusy ? "Sending…" : "Send ✉️"}
+                      </button>
+                    </div>
+                  </div>
 
                   <button style={{ ...btn(T.green), marginTop: 8, opacity: famBusy ? 0.6 : 1 }} disabled={famBusy} onClick={familyDigest}>
                     ✨ This week, and one thing to do tonight
@@ -5078,7 +5167,7 @@ Respond with ONLY a JSON object, no markdown:
             })()}
 
             {/* Teacher dashboard */}
-            {teaching && (
+            {teaching && classMode !== "teacher-setup" && (
               <div>
                 <div style={{
                   border: `2px solid ${T.blue}`, borderRadius: 14, padding: "16px 18px",
@@ -5217,6 +5306,72 @@ Respond with ONLY a JSON object, no markdown:
                 })()}
 
                 {tPane === "readers" && (<>
+                {/* ----- Family Link: codes + two-way messages ----- */}
+                <Ruled style={{ marginBottom: 14 }}>
+                  <div style={{ fontWeight: 700, lineHeight: "28px" }}>💛 Family Link — invite families & hear back</div>
+                  <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "2px 0 8px" }}>
+                    Type a reader's name to make their family code — it works even before that reader joins the class.
+                    Families enter it on their own phone under <strong>"I'm a parent"</strong> to follow progress, get your notes, and write back to you.
+                  </p>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: 8 }}>
+                    <input style={{ ...input, flex: "1 1 180px" }} placeholder="Reader's first name" maxLength={30}
+                      value={famNameInput} onChange={(e) => setFamNameInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && generateFamilyCode()} />
+                    <button style={{ ...btn(T.green), opacity: famNameInput.trim() && !famGenBusy ? 1 : 0.5 }}
+                      disabled={!famNameInput.trim() || famGenBusy} onClick={generateFamilyCode}>
+                      {famGenBusy ? "Creating…" : "Make family code 💛"}
+                    </button>
+                  </div>
+                  {Object.keys(teaching.family || {}).length > 0 && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 8 }}>
+                      {Object.entries(teaching.family || {}).map(([code, nm]) => (
+                        <span key={code} style={{ fontSize: 12, border: `1.5px solid ${T.green}`, borderRadius: 999, padding: "4px 11px", color: T.ink }}>
+                          <strong>{nm}</strong> · <span style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, letterSpacing: "0.08em" }}>{code}</span>
+                          <button style={{ ...ghostBtn, marginLeft: 6, padding: "1px 8px", fontSize: 10.5 }} onClick={() => copyCode(code)}>
+                            {copied === code ? "copied ✓" : "copy"}
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ borderTop: `1px solid ${T.rule}`, paddingTop: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <strong style={{ fontSize: 13.5 }}>💬 Messages from families</strong>
+                      <button style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12 }} disabled={famInboxBusy} onClick={loadFamilyInbox}>
+                        {famInboxBusy ? "Checking…" : famInbox ? "Refresh ↻" : "Check messages"}
+                      </button>
+                    </div>
+                    {famInbox && Object.keys(famInbox).length === 0 && (
+                      <p style={{ fontSize: 12.5, color: T.inkSoft, margin: "6px 0 2px" }}>No family messages yet — replies to your notes will land here.</p>
+                    )}
+                    {famInbox && Object.entries(famInbox).map(([nm, msgs]) => (
+                      <div key={nm} style={{ border: `1px solid ${T.rule}`, borderRadius: 10, padding: "9px 12px", margin: "8px 0", background: T.paper }}>
+                        <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 4 }}>{nm}'s family</div>
+                        {msgs.slice(-4).map((m) => (
+                          <div key={m.id} style={{
+                            fontSize: 13, margin: "4px 0", padding: "6px 9px", borderRadius: 8,
+                            background: m.who === "family" ? "#F0F5F0" : "#F5F8FC",
+                            borderLeft: `3px solid ${m.who === "family" ? T.green : T.blue}`,
+                          }}>
+                            <span style={{ fontSize: 10.5, color: T.inkSoft, display: "block" }}>
+                              {m.who === "family" ? "👪 Family" : `You (${m.from})`} · {new Date(m.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                              {m.who !== "family" && m.ack ? " · seen ✓" : ""}
+                            </span>
+                            {m.text}
+                          </div>
+                        ))}
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          <input style={{ ...input, flex: 1, padding: "7px 10px", fontSize: 13 }} placeholder={`Reply to ${nm}'s family…`} maxLength={400}
+                            value={famReplyDraft[nm] || ""} onChange={(e) => setFamReplyDraft((d) => ({ ...d, [nm]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && replyToFamily(nm)} />
+                          <button style={{ ...btn(), padding: "6px 13px", fontSize: 12.5, opacity: (famReplyDraft[nm] || "").trim() ? 1 : 0.5 }}
+                            disabled={!(famReplyDraft[nm] || "").trim()} onClick={() => replyToFamily(nm)}>Send</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Ruled>
+
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
                   <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: 0 }}>
                     Where your readers are
@@ -5301,7 +5456,7 @@ Respond with ONLY a JSON object, no markdown:
                                     </span>
                                   ) : (
                                     <button style={{ background: "none", border: "none", color: T.green, cursor: "pointer", fontSize: 11.5, padding: "3px 0", textDecoration: "underline", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
-                                      onClick={() => { const c = makeFamilyCode(nm); if (c) flash(`Family code for ${nm}: ${c} — share it with the family 💛`); }}>
+                                      onClick={async () => { const c = await makeFamilyCode(nm); if (c) flash(`Family code for ${nm}: ${c} — share it with the family 💛`); }}>
                                       💛 invite the family
                                     </button>
                                   );
