@@ -499,27 +499,34 @@ const topTag = (tagScores) => Object.entries(tagScores).sort((a, b) => b[1] - a[
 // Normalize titles for matching search results against Gutenberg's catalog
 const normTitle = (t) => (t || "").toLowerCase().replace(/[^a-z0-9áéíóúñü ]/g, "").replace(/\s+/g, " ").trim();
 
-// Search Gutenberg's catalog (with a hard 5s timeout so it never slows the UI)
-async function gutenbergLookup(query, topic) {
+// Fetch with a hard timeout — a hung request should never freeze the UI
+const fetchT = (url, ms = 6000, opts = {}) => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+};
+
+// Search Gutenberg's catalog. v2: the proxy and the direct call race IN
+// PARALLEL, each with its own timeout — the old version waited for the proxy
+// to fully fail (which could take 10s+) before even trying gutendex directly.
+async function gutenbergLookup(query, topic, page = 1) {
   const parse = (d) => (d.results || []).slice(0, 32).map((b) => ({
     gid: b.id, key: normTitle(b.title), title: b.title, author: (b.authors || [])[0]?.name || "",
   }));
-  const qs = topic ? `topic=${encodeURIComponent(topic)}` : `q=${encodeURIComponent(query)}`;
-  // Server proxy first — survives ad-blockers, school filters and privacy browsers
+  const pg = page > 1 ? `&page=${page}` : "";
+  const qs = (topic ? `topic=${encodeURIComponent(topic)}` : `q=${encodeURIComponent(query)}`) + pg;
+  const direct = (topic
+    ? `https://gutendex.com/books?topic=${encodeURIComponent(topic)}`
+    : `https://gutendex.com/books?search=${encodeURIComponent(query)}`) + pg;
+  const attempt = async (url) => {
+    const r = await fetchT(url, 7000);
+    if (!r.ok) throw new Error("bad status");
+    const out = parse(await r.json());
+    if (!out.length) throw new Error("empty");
+    return out;
+  };
   try {
-    const r = await fetch(`/api/guten?${qs}`);
-    if (r.ok) return parse(await r.json());
-  } catch { /* fall through */ }
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 6000);
-    const direct = topic
-      ? `https://gutendex.com/books?topic=${encodeURIComponent(topic)}`
-      : `https://gutendex.com/books?search=${encodeURIComponent(query)}`;
-    const r2 = await fetch(direct, { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!r2.ok) return [];
-    return parse(await r2.json());
+    return await Promise.any([attempt(`/api/guten?${qs}`), attempt(direct)]);
   } catch {
     return [];
   }
@@ -2051,7 +2058,7 @@ Respond with ONLY a JSON object, no markdown:
       });
     };
     // Google Books answers fast — render it the moment it lands
-    const gbP = fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=16`)
+    const gbP = fetchT(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=16`, 7000)
       .then((r) => r.json())
       .then((d) => mergeIn((d.items || []).map((it) => {
         const v = it.volumeInfo || {};
@@ -2063,8 +2070,8 @@ Respond with ONLY a JSON object, no markdown:
         };
       })))
       .catch(() => {});
-    // Open Library adds depth when it (eventually) answers
-    const olP = fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=15&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`)
+    // Open Library adds depth when it (eventually) answers — capped at 8s
+    const olP = fetchT(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=15&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`, 8000)
       .then((r) => r.json())
       .then((d) => mergeIn(d.docs || []))
       .catch(() => {});
@@ -3015,12 +3022,18 @@ Respond with ONLY a JSON object, no markdown:
   }, [tab, loaded, onboarded]);
 
   // ----- Browse a whole subject, including free titles in that subject -----
-  const browseSubject = async (entry) => {
+  // Session cache: tapping the same subject pill twice is instant
+  const subjectCacheRef = useRef({});
+  const subjectEntryRef = useRef(null);   // the subject currently open
+  const subjectPageRef = useRef({});      // how deep into each subject we've paged
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // Pulls one "page" of a subject from FOUR sources at once:
+  // Google Books (proxy + direct), Open Library's subject catalog, and
+  // Project Gutenberg. Each page adds ~120 unique books; the catalogs
+  // behind them hold thousands, so "Load more" never really runs dry.
+  const loadSubjectBatch = async (entry, page) => {
     const [label, gq, topic] = entry;
-    setSubject(label);
-    setSearching(true);
-    setSearchResults([]);
-    setBookQuery("");
     const merge = (items) => setSearchResults((prev) => {
       const seen = new Set((prev || []).map((x) => `${(x.title || "").toLowerCase()}`));
       const out = [...(prev || [])];
@@ -3028,48 +3041,90 @@ Respond with ONLY a JSON object, no markdown:
         const t = (it.title || "").toLowerCase();
         if (it.title && !seen.has(t)) { seen.add(t); out.push(it); }
       }
-      return out.slice(0, 30);
+      return out.slice(0, 600);
     });
     const esQ = label.includes("español") ? "&langRestrict=es" : "";
-    try {
-      let d;
-      try {
-        const r = await fetch(`/api/gbooks?q=${encodeURIComponent(gq)}${esQ}&maxResults=24`);
-        d = r.ok ? await r.json() : null;
-      } catch { d = null; }
-      if (!d) {
-        const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(gq)}${esQ}&maxResults=24`);
-        d = await r2.json();
-      }
-      merge((d.items || []).map((it) => {
-        const v = it.volumeInfo || {};
-        return {
-          key: `gb-${it.id}`, title: v.title, author_name: v.authors || [],
-          number_of_pages_median: v.pageCount || null,
-          first_publish_year: (v.publishedDate || "").slice(0, 4) || null,
-          gbCover: v.imageLinks?.smallThumbnail?.replace("http://", "https://") || null,
-        };
-      }));
-    } catch { /* keep whatever landed */ }
-    setSearching(false);
-    // Free titles in this subject, badged
-    gutenbergLookup("", topic).then((glist) => {
+    const mapGb = (d) => (d.items || []).map((it) => {
+      const v = it.volumeInfo || {};
+      return {
+        key: `gb-${it.id}`, title: v.title, author_name: v.authors || [],
+        number_of_pages_median: v.pageCount || null,
+        first_publish_year: (v.publishedDate || "").slice(0, 4) || null,
+        gbCover: v.imageLinks?.smallThumbnail?.replace("http://", "https://") || null,
+      };
+    });
+    const land = (items) => { if (items && items.length) { merge(items); setSearching(false); } };
+    const start = (page - 1) * 40;
+    const startQ = start > 0 ? `&startIndex=${start}` : "";
+    const olOffset = (page - 1) * 50;
+
+    const proxyP = fetchT(`/api/gbooks?q=${encodeURIComponent(gq)}${esQ}&maxResults=40${startQ}`, 6000)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) land(mapGb(d)); })
+      .catch(() => {});
+    const directP = fetchT(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(gq)}${esQ}&maxResults=40${startQ}`, 7000)
+      .then((r) => r.json())
+      .then((d) => land(mapGb(d)))
+      .catch(() => {});
+    // Open Library's subject shelves run tens of thousands deep
+    const olLang = label.includes("español") ? "&lang=spa" : "";
+    const olP = fetchT(`https://openlibrary.org/search.json?q=${encodeURIComponent(`subject:"${topic}"`)}&limit=50&offset=${olOffset}${olLang}&fields=key,title,author_name,number_of_pages_median,cover_i,first_publish_year`, 8000)
+      .then((r) => r.json())
+      .then((d) => land((d.docs || []).filter((x) => x.title).map((x) => ({ ...x, key: `ol-${x.key}` }))))
+      .catch(() => {});
+    const gutenP = gutenbergLookup("", topic, page).then((glist) => {
       if (!glist.length) return;
       setSearchResults((prev) => {
         const annotated = (prev || []).map((doc) => {
+          if (doc.gutenId) return doc;
           const g = matchGuten(glist, doc.title, (doc.author_name || [])[0] || "");
           return g ? { ...doc, gutenId: g.gid, gutenAuthor: g.author } : doc;
         });
-        // Append free books from this subject that weren't already in the list
+        // Free classics fill the grid even when Google is slow or blocked
         const seen = new Set(annotated.map((x) => normTitle(x.title)));
-        const extras = glist.filter((g) => !seen.has(g.key)).slice(0, 10).map((g) => ({
+        const extras = glist.filter((g) => !seen.has(g.key)).map((g) => ({
           key: `gt-${g.gid}`, title: g.title, author_name: g.author ? [g.author] : [],
           gutenId: g.gid, gutenAuthor: g.author,
         }));
-        return [...annotated, ...extras].slice(0, 36);
+        const out = [...annotated, ...extras].slice(0, 600);
+        if (out.length) setSearching(false);
+        return out;
       });
-      huntCovers(); // fill in any coverless results in the background
+    }).catch(() => {});
+
+    await Promise.allSettled([proxyP, directP, olP, gutenP]);
+    setSearching(false);
+    huntCovers(); // fill in any coverless results in the background
+    // Remember what this subject produced for instant replays
+    setSearchResults((prev) => {
+      if (prev && prev.length) subjectCacheRef.current[label] = prev;
+      return prev;
     });
+  };
+
+  const browseSubject = async (entry) => {
+    const [label] = entry;
+    setSubject(label);
+    setBookQuery("");
+    subjectEntryRef.current = entry;
+    subjectPageRef.current[label] = 1;
+    // Instant replay from cache — refreshes silently underneath
+    const cached = subjectCacheRef.current[label];
+    setSearchResults(cached ? [...cached] : []);
+    setSearching(!cached);
+    await loadSubjectBatch(entry, 1);
+  };
+
+  // "Load more books" — digs one page deeper into every source
+  const loadMoreSubject = async () => {
+    const entry = subjectEntryRef.current;
+    if (!entry || loadingMore) return;
+    const [label] = entry;
+    setLoadingMore(true);
+    const page = (subjectPageRef.current[label] || 1) + 1;
+    subjectPageRef.current[label] = page;
+    await loadSubjectBatch(entry, page);
+    setLoadingMore(false);
   };
 
   // ----- Readers can correct a wrong "free to read" badge -----
@@ -3089,15 +3144,19 @@ Respond with ONLY a JSON object, no markdown:
     let text = "";
     try {
       const q = `intitle:${title}` + (author ? ` inauthor:${author}` : "");
-      let d;
-      try {
-        const r = await fetch(`/api/gbooks?q=${encodeURIComponent(q)}&maxResults=1`);
-        if (!r.ok) throw new Error("proxy");
-        d = await r.json();
-      } catch {
-        const r2 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=1`);
-        d = await r2.json();
-      }
+      // Proxy and direct race in parallel with timeouts — first good answer wins
+      const attempt = async (url) => {
+        const r = await fetchT(url, 5000);
+        if (!r.ok) throw new Error("bad");
+        const dd = await r.json();
+        if (!dd.items?.length) throw new Error("empty");
+        return dd;
+      };
+      const d = await Promise.any([
+        attempt(`/api/gbooks?q=${encodeURIComponent(q)}&maxResults=1`),
+        attempt(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=1`),
+      ]).catch(() => null);
+      if (!d) throw new Error("no result");
       text = d.items?.[0]?.volumeInfo?.description || "";
       if (text.length > 380) text = text.slice(0, 380).replace(/\s+\S*$/, "") + "…";
     } catch { /* fall through to AI */ }
@@ -3384,7 +3443,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v51</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v53</span>
         </p>
       </header>
 
@@ -4063,7 +4122,13 @@ Respond with ONLY a JSON object, no markdown:
               <div style={{ marginBottom: 22 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
                   <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 900, fontSize: 20, margin: "0 0 10px" }}>
-                    {searchResults.length ? `Results for “${bookQuery}”` : `Nothing found for “${bookQuery}” — try fewer words?`}
+                    {searchResults.length
+                      ? (subject ? `${subject} books · ${searchResults.length}` : `Results for “${bookQuery}”`)
+                      : searching
+                        ? "Finding books… 📚"
+                        : subject
+                          ? `Couldn't load ${subject} right now — tap it again to retry`
+                          : `Nothing found for “${bookQuery}” — try fewer words?`}
                   </h2>
                   <button style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12 }}
                     onClick={() => { setSearchResults(null); setBookQuery(""); }}>
@@ -4139,6 +4204,16 @@ Respond with ONLY a JSON object, no markdown:
                     );
                   })}
                 </div>
+                {subject && searchResults.length > 0 && (
+                  <div style={{ textAlign: "center", marginTop: 16 }}>
+                    <button style={{ ...btn(), opacity: loadingMore ? 0.6 : 1 }} disabled={loadingMore} onClick={loadMoreSubject}>
+                      {loadingMore ? "Finding more books…" : "Load more books ↓"}
+                    </button>
+                    <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 6 }}>
+                      {searchResults.length} so far — there are thousands more in {subject}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             <p style={{ marginTop: 0, color: T.inkSoft }}>
