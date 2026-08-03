@@ -115,22 +115,22 @@ const lvl = (c) => GRADES[c?.level] || GRADES.g35;
 // ---------- Browse by subject: broad coverage, not just novels ----------
 // Each entry: [label, Google Books query, Gutenberg topic for the free shelf]
 const SUBJECTS = [
-  ["✝️ Faith & theology", 'subject:"religion" OR subject:"theology"', "Christianity"],
-  ["📖 Bible & study", 'subject:"bible" OR intitle:"bible study"', "Bible"],
-  ["🕊️ Christian living", 'subject:"christian life" OR subject:"devotional"', "Christian life"],
-  ["⛪ Church history", 'subject:"church history"', "Church history"],
-  ["🌍 World religions", 'subject:"religions" OR subject:"islam" OR subject:"judaism" OR subject:"buddhism"', "Religion"],
-  ["🧠 Philosophy", 'subject:"philosophy"', "Philosophy"],
-  ["📜 History", 'subject:"history"', "History"],
-  ["🔬 Science", 'subject:"science"', "Science"],
   ["🚀 Sci-fi & fantasy", 'subject:"science fiction" OR subject:"fantasy"', "Science fiction"],
   ["🔍 Mystery", 'subject:"detective and mystery stories"', "Detective and mystery stories"],
   ["💛 Romance", 'subject:"romance"', "Love stories"],
+  ["📜 History", 'subject:"history"', "History"],
+  ["🔬 Science", 'subject:"science"', "Science"],
+  ["🧠 Philosophy", 'subject:"philosophy"', "Philosophy"],
   ["🎭 Poetry & drama", 'subject:"poetry" OR subject:"drama"', "Poetry"],
   ["🧒 Kids & young readers", 'subject:"juvenile fiction"', "Children's literature"],
   ["🇲🇽 En español", 'subject:"fiction"', "Spanish"],
   ["💪 Biography", 'subject:"biography"', "Biography"],
   ["🧰 Self-help", 'subject:"self-help"', "Conduct of life"],
+  ["✝️ Faith & theology", 'subject:"religion" OR subject:"theology"', "Christianity"],
+  ["📖 Bible & study", 'subject:"bible" OR intitle:"bible study"', "Bible"],
+  ["🕊️ Christian living", 'subject:"christian life" OR subject:"devotional"', "Christian life"],
+  ["⛪ Church history", 'subject:"church history"', "Church history"],
+  ["🌍 World religions", 'subject:"religions" OR subject:"islam" OR subject:"judaism" OR subject:"buddhism"', "Religion"],
 ];
 
 // ---------- The shelf: the one place the app is allowed to show off ----------
@@ -246,6 +246,31 @@ const spineColor = (title) => {
   for (let i = 0; i < title.length; i++) h = (h * 31 + title.charCodeAt(i)) >>> 0;
   return SPINES[h % SPINES.length];
 };
+
+// Project Gutenberg keeps a scanned cover for almost every book at this address
+const gutenCover = (gid) => `https://www.gutenberg.org/cache/epub/${gid}/pg${gid}.cover.medium.jpg`;
+
+// ---------- Book cover that never shows up blank ----------
+// Cover URLs fail quietly all the time: Open Library serves a 1×1 blank gif
+// for missing covers, Google thumbnails 404, older Gutenberg scans have none.
+// This tries the real cover and swaps in the colored-spine placeholder the
+// instant the image errors OR arrives as a blank pixel — no more empty boxes.
+function CoverThumb({ src, title, w = 52, h = 76, center = false }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [src]);
+  const common = { width: w, height: h, borderRadius: 4, flexShrink: 0, margin: center ? "0 auto" : undefined };
+  if (!src || failed) {
+    return <div style={{ ...common, background: spineColor(title || "book"), boxShadow: "inset -4px 0 rgba(0,0,0,0.18)" }} />;
+  }
+  return (
+    <img
+      src={src} alt="" loading="lazy"
+      onError={() => setFailed(true)}
+      onLoad={(e) => { if (e.currentTarget.naturalWidth <= 2 || e.currentTarget.naturalHeight <= 2) setFailed(true); }}
+      style={{ ...common, objectFit: "cover", display: center ? "block" : undefined, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }}
+    />
+  );
+}
 
 // ---------- Curated picks for new readers ----------
 const PICKS = [
@@ -1985,6 +2010,28 @@ Respond with ONLY a JSON object, no markdown:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookQuery, tab]);
 
+  // ----- Cover hunt: no book card should sit blank -----
+  // Open Library results often arrive with no cover id. For those, quietly ask
+  // Google Books for a thumbnail and pop it in when it lands (capped at 10
+  // lookups per search so we stay polite with the API).
+  const huntCovers = () => {
+    setSearchResults((prev) => {
+      const missing = (prev || []).filter((x) => x.title && !x.gbCover && !x.cover_i && !x.gutenId && !x.hunted).slice(0, 10);
+      if (missing.length) setTimeout(() => {
+        missing.forEach(async (doc) => {
+          try {
+            const q = `intitle:"${doc.title}"` + (doc.author_name?.[0] ? ` inauthor:"${doc.author_name[0]}"` : "");
+            const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=1`);
+            const d = await r.json();
+            const th = d.items?.[0]?.volumeInfo?.imageLinks?.smallThumbnail?.replace("http://", "https://") || null;
+            if (th) setSearchResults((cur) => (cur || []).map((x) => (x.key === doc.key ? { ...x, gbCover: th } : x)));
+          } catch { /* the colored placeholder stays — still looks intentional */ }
+        });
+      }, 0);
+      return (prev || []).map((x) => (missing.some((m) => m.key === x.key) ? { ...x, hunted: true } : x));
+    });
+  };
+
   // ----- Open Library book search (~40 million books, free, no key) -----
   const searchBooks = async () => {
     const q = bookQuery.trim();
@@ -2025,6 +2072,7 @@ Respond with ONLY a JSON object, no markdown:
     await Promise.race([gbP, olP]);
     setSearching(false);
     Promise.allSettled([gbP, olP]).then(() => {
+      huntCovers(); // fill in any coverless results in the background
       // Free-digital badges pop in last
       gutenbergLookup(q).then((glist) => {
         if (!glist || !glist.length) return;
@@ -2127,8 +2175,39 @@ Respond with ONLY a JSON object, no markdown:
     setGutenLoading(false);
   };
 
+  // ----- Book text cache: a book downloads once, then opens instantly -----
+  // Uses the browser Cache API (built for exactly this; localStorage is too
+  // small for full novels). Also enables offline re-reading in the PWA.
+  const fetchBookText = async (gid) => {
+    const url = `/api/book?id=${gid}`;
+    try {
+      const cache = await caches.open("sl-books-v1");
+      const hit = await cache.match(url);
+      if (hit) {
+        const d = await hit.json();
+        if (d && d.text) return d;
+      }
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("bad status");
+      const clone = r.clone();
+      const d = await r.json();
+      if (!d.text) throw new Error(d.error || "no text");
+      cache.put(url, clone).catch(() => {}); // best-effort; reading still works
+      return d;
+    } catch {
+      // Cache API unavailable (rare) — plain fetch still works
+      const r = await fetch(url);
+      const d = await r.json();
+      if (!d.text) throw new Error(d.error || "no text");
+      return d;
+    }
+  };
+  // Warm the cache in the background so "Start reading" feels instant
+  const prefetchBook = (gid) => { try { fetchBookText(gid).catch(() => {}); } catch { /* noop */ } };
+
   const addDigital = (b) => {
     if (digitalShelf.some((x) => x.gid === b.gid)) { flash("Already on your digital shelf ✓"); return; }
+    prefetchBook(b.gid);
     const patch = { digitalShelf: [{ gid: b.gid, title: b.title, author: b.author, cover: b.cover || null, pos: 0 }, ...digitalShelf] };
     // Also add a linked book to My Shelf — reading progress syncs automatically
     if (!books.some((x) => x.gid === b.gid)) {
@@ -2662,8 +2741,7 @@ Respond with ONLY a JSON object, no markdown:
     window.__slReadStart = Date.now();
     setReader({ gid: item.gid, title: item.title, author: item.author, loading: true, pages: [], page: item.pos || 0 });
     try {
-      const r = await fetch(`/api/book?id=${item.gid}`);
-      const d = await r.json();
+      const d = await fetchBookText(item.gid); // instant after the first open (cached)
       if (!d.text) throw new Error(d.error || "no text");
       // Split into gentle pages (~1600 chars, breaking at whitespace)
       const pages = [];
@@ -2990,6 +3068,7 @@ Respond with ONLY a JSON object, no markdown:
         }));
         return [...annotated, ...extras].slice(0, 36);
       });
+      huntCovers(); // fill in any coverless results in the background
     });
   };
 
@@ -3305,7 +3384,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v49</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v51</span>
         </p>
       </header>
 
@@ -3511,11 +3590,7 @@ Respond with ONLY a JSON object, no markdown:
                           flex: "0 0 128px", background: T.paper, border: `1px solid ${T.rule}`,
                           borderRadius: 10, padding: 8, textAlign: "center",
                         }}>
-                          {b.cover ? (
-                            <img src={b.cover} alt="" style={{ width: 72, height: 104, objectFit: "cover", borderRadius: 4, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
-                          ) : (
-                            <div style={{ width: 72, height: 104, margin: "0 auto", borderRadius: 4, background: spineColor(b.title), boxShadow: "inset -5px 0 rgba(0,0,0,0.18)" }} />
-                          )}
+                          <CoverThumb src={b.cover} title={b.title} w={72} h={104} center />
                           <div style={{ fontSize: 11.5, fontWeight: 700, lineHeight: 1.2, marginTop: 5, height: 28, overflow: "hidden" }}>{b.title}</div>
                           <div style={{ fontSize: 10, color: T.inkSoft }}>{b.author}</div>
                           <div style={{ display: "flex", gap: 4, justifyContent: "center", marginTop: 5 }}>
@@ -4005,15 +4080,12 @@ Respond with ONLY a JSON object, no markdown:
                         border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12,
                         background: T.paper, display: "flex", gap: 10,
                       }}>
-                        {r.cover_i || r.gbCover ? (
-                          <img
-                            src={r.gbCover || `https://covers.openlibrary.org/b/id/${r.cover_i}-M.jpg`}
-                            alt=""
-                            style={{ width: 52, height: 76, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }}
-                          />
-                        ) : (
-                          <div style={{ width: 52, height: 76, borderRadius: 4, flexShrink: 0, background: spineColor(r.title), boxShadow: "inset -4px 0 rgba(0,0,0,0.18)" }} />
-                        )}
+                        <CoverThumb
+                          src={r.gbCover
+                            || (r.cover_i ? `https://covers.openlibrary.org/b/id/${r.cover_i}-M.jpg?default=false` : null)
+                            || (r.gutenId ? gutenCover(r.gutenId) : null)}
+                          title={r.title}
+                        />
                         <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
                           <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15, lineHeight: 1.2 }}>{r.title}</div>
                           <div style={{ fontSize: 12, color: T.inkSoft }}>
@@ -4445,11 +4517,7 @@ Respond with ONLY a JSON object, no markdown:
                                 border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12,
                                 background: T.paper, display: "flex", gap: 10,
                               }}>
-                                {r.cover ? (
-                                  <img src={r.cover} alt="" style={{ width: 52, height: 76, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
-                                ) : (
-                                  <div style={{ width: 52, height: 76, borderRadius: 4, flexShrink: 0, background: spineColor(r.title), boxShadow: "inset -4px 0 rgba(0,0,0,0.18)" }} />
-                                )}
+                                <CoverThumb src={r.cover} title={r.title} />
                                 <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
                                   <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15, lineHeight: 1.2 }}>{r.title}</div>
                                   <div style={{ fontSize: 12, color: T.inkSoft }}>{r.author}{r.pages ? ` · ${r.pages} pages` : ""}</div>
@@ -6129,12 +6197,7 @@ Respond with ONLY a JSON object, no markdown:
                               border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12,
                               background: T.paper, display: "flex", gap: 10,
                             }}>
-                              {r.cover_i ? (
-                                <img src={`https://covers.openlibrary.org/b/id/${r.cover_i}-M.jpg`} alt=""
-                                  style={{ width: 52, height: 76, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
-                              ) : (
-                                <div style={{ width: 52, height: 76, borderRadius: 4, flexShrink: 0, background: spineColor(r.title || "book"), boxShadow: "inset -4px 0 rgba(0,0,0,0.18)" }} />
-                              )}
+                              <CoverThumb src={r.cover_i ? `https://covers.openlibrary.org/b/id/${r.cover_i}-M.jpg?default=false` : null} title={r.title} />
                               <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
                                 <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15, lineHeight: 1.2 }}>{r.title}</div>
                                 <div style={{ fontSize: 12, color: T.inkSoft }}>{author}{pages ? ` · ${pages} pages` : ""}</div>
@@ -6239,11 +6302,7 @@ Respond with ONLY a JSON object, no markdown:
                 {gutenResults.length === 0 && <p style={{ color: T.inkSoft }}>Nothing found — try an author's last name.</p>}
                 {gutenResults.map((b) => (
                   <div key={b.gid} style={{ border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12, background: T.paper, display: "flex", gap: 10 }}>
-                    {b.cover ? (
-                      <img src={b.cover} alt="" style={{ width: 52, height: 76, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "1px 2px 5px rgba(34,51,77,0.25)" }} />
-                    ) : (
-                      <div style={{ width: 52, height: 76, borderRadius: 4, flexShrink: 0, background: spineColor(b.title), boxShadow: "inset -4px 0 rgba(0,0,0,0.18)" }} />
-                    )}
+                    <CoverThumb src={b.cover || gutenCover(b.gid)} title={b.title} />
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
                       <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15, lineHeight: 1.2 }}>{b.title}</div>
                       <div style={{ fontSize: 12, color: T.inkSoft }}>{b.author}</div>
@@ -6869,21 +6928,25 @@ Respond with ONLY a JSON object, no markdown:
           display: "flex", flexDirection: "column",
         }}>
           <div style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
-            padding: "10px 14px", borderBottom: `1.5px solid ${T.rule}`, background: T.card, flexWrap: "wrap",
+            padding: "10px 14px 8px", borderBottom: `1.5px solid ${T.rule}`, background: T.card,
           }}>
-            <div style={{ minWidth: 0, flex: "1 1 140px" }}>
-              <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {reader.title}
+            {/* Row 1: title + Close — Close is ALWAYS visible, even in portrait */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {reader.title}
+                </div>
+                <div style={{ fontSize: 11.5, color: T.inkSoft }}>{reader.author}</div>
               </div>
-              <div style={{ fontSize: 11.5, color: T.inkSoft }}>{reader.author}</div>
+              <button style={{ ...btn(T.stamp), padding: "5px 12px", flexShrink: 0 }} onClick={() => { stopAllSpeech(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); stopAllSpeech(); setWordCard(null); setPractice(null); setReader(null); }}>Close ✕</button>
             </div>
-            <div style={{ display: "flex", gap: 5, alignItems: "center", flexShrink: 0, flexWrap: "wrap" }}>
+            {/* Row 2: tools — one swipeable row on phones instead of a tall stack */}
+            <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch", marginTop: 8, paddingBottom: 2 }}>
               <button
                 title={premiumVoice
                   ? (voicePref === "male" ? "Narrator: Marco — tap for Ana" : "Narrator: Ana — tap for Marco")
                   : "Voice: tap to change (device / female / male)"}
-                style={{ ...ghostBtn, padding: "4px 11px", fontSize: premiumVoice ? 12.5 : 15, whiteSpace: "nowrap" }}
+                style={{ ...ghostBtn, padding: "4px 11px", fontSize: premiumVoice ? 12.5 : 15, whiteSpace: "nowrap", flexShrink: 0 }}
                 onClick={() => {
                   stopAllSpeech();
                   if (premiumVoice) {
@@ -6900,7 +6963,7 @@ Respond with ONLY a JSON object, no markdown:
                   ? (voicePref === "male" ? "👨 Marco" : "👩 Ana")
                   : (voicePref === "system" ? "🔈" : voicePref === "female" ? "👩" : "👨")}
               </button>
-              <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13 }}
+              <button style={{ ...(readAlong.on ? btn(T.stamp) : btn(T.green)), padding: "4px 11px", fontSize: 13, whiteSpace: "nowrap", flexShrink: 0 }}
                 onClick={() => {
                   if (readAlong.on || audioBusy) { stopAllSpeech(); return; }
                   readOnFrom(0);
@@ -6908,13 +6971,13 @@ Respond with ONLY a JSON object, no markdown:
                 {audioBusy ? "…" : readAlong.on ? "⏹ Stop" : "🔊 Read to me"}
               </button>
               <button title={tapMode === "define" ? "Tapping a word shows its meaning — tap here to switch" : "Tapping a word reads from there — tap here to switch"}
-                style={{ ...(tapMode === "read" ? btn(T.blue) : ghostBtn), padding: "4px 11px", fontSize: 12.5 }}
+                style={{ ...(tapMode === "read" ? btn(T.blue) : ghostBtn), padding: "4px 11px", fontSize: 12.5, whiteSpace: "nowrap", flexShrink: 0 }}
                 onClick={() => { stopReadAlong(); setTapMode(tapMode === "define" ? "read" : "define"); flash(tapMode === "define" ? "Tap any sentence to read from there ▶" : "Tap any word for its meaning 💬"); }}>
                 {tapMode === "define" ? "💬 Tap = meaning" : "▶ Tap = read"}
               </button>
               {studioAvailable && <button
                 title={premiumVoice ? "Studio voice on — tap for the device voice" : "Studio voice off — tap for the natural narrator"}
-                style={{ ...(premiumVoice ? btn(T.gold) : ghostBtn), padding: "4px 10px", fontSize: 12.5 }}
+                style={{ ...(premiumVoice ? btn(T.gold) : ghostBtn), padding: "4px 10px", fontSize: 12.5, whiteSpace: "nowrap", flexShrink: 0 }}
                 onClick={() => {
                   stopAllSpeech();
                   const on = !premiumVoice;
@@ -6923,16 +6986,15 @@ Respond with ONLY a JSON object, no markdown:
                   flash(on ? "Studio voice ✨ — tap the narrator to switch Ana / Marco" : "Device voice");
                 }}>
                 {premiumVoice ? "✨ Studio" : "Studio?"}
-              </button>}              <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13 }} onClick={startPractice}>🎙</button>
+              </button>}              <button title="Practice reading out loud" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 13, flexShrink: 0 }} onClick={startPractice}>🎙</button>
               <button
                 title={readerFace === "hyper" ? "Font: Hyperlegible — tap for Lexend" : readerFace === "lexend" ? "Font: Lexend (wider spacing) — tap for storybook" : "Font: storybook serif — tap for Hyperlegible"}
-                style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12.5, fontFamily: readerFace === "lexend" ? "'Lexend', sans-serif" : readerFace === "serif" ? "'Fraunces', serif" : "'Atkinson Hyperlegible', sans-serif" }}
+                style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12.5, fontFamily: readerFace === "lexend" ? "'Lexend', sans-serif" : readerFace === "serif" ? "'Fraunces', serif" : "'Atkinson Hyperlegible', sans-serif", flexShrink: 0 }}
                 onClick={() => { const next = readerFace === "hyper" ? "lexend" : readerFace === "lexend" ? "serif" : "hyper"; setReaderFace(next); flash(next === "lexend" ? "Lexend — wider spacing, easier tracking" : next === "serif" ? "Storybook serif" : "Hyperlegible — clearest letter shapes"); }}>
                 Aa
               </button>
-              <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
-              <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px" }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
-              <button style={{ ...btn(T.stamp), padding: "5px 12px" }} onClick={() => { stopAllSpeech(); stopListening(); const m = bankMinutes(); window.__slReadStart = null; if (m) persist({ readLog: logActivity({ min: m }) }); stopAllSpeech(); setWordCard(null); setPractice(null); setReader(null); }}>Close</button>
+              <button aria-label="Smaller text" style={{ ...ghostBtn, padding: "4px 9px", flexShrink: 0 }} onClick={() => setReaderFont(Math.max(13, readerFont - 2))}>A−</button>
+              <button aria-label="Bigger text" style={{ ...ghostBtn, padding: "4px 9px", flexShrink: 0 }} onClick={() => setReaderFont(Math.min(26, readerFont + 2))}>A+</button>
             </div>
           </div>
 
@@ -7467,12 +7529,7 @@ function BookTitleInput({ value, onChange, onPick, placeholder }) {
                   fontFamily: "'Atkinson Hyperlegible', sans-serif",
                 }}
               >
-                {r.cover ? (
-                  <img src={r.cover} alt=""
-                    style={{ width: 28, height: 40, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} />
-                ) : (
-                  <div style={{ width: 28, height: 40, borderRadius: 3, flexShrink: 0, background: spineColor(r.title) }} />
-                )}
+                <CoverThumb src={r.cover || (r.gutenId ? gutenCover(r.gutenId) : null)} title={r.title} w={28} h={40} />
                 <span style={{ minWidth: 0 }}>
                   <span style={{ display: "block", fontWeight: 700, fontSize: 14, color: T.ink, lineHeight: 1.2 }}>
                     {r.title}{r.gutenId ? " 📱" : ""}
