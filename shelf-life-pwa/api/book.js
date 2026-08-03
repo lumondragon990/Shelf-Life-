@@ -1,6 +1,18 @@
-// api/book.js — v2: fetches a public-domain book's text from Project Gutenberg,
-// trying multiple official sources/mirrors (some block cloud-server requests).
-// Replaces the previous version at: shelf-life-pwa/api/book.js
+// api/book.js — v3: fetches a public-domain book's text from Project Gutenberg.
+// v3 change: all mirrors are raced IN PARALLEL with per-request timeouts.
+// The old version tried mirrors one at a time — when gutenberg.org hung or
+// blocked our cloud IP, every book took 10-30s to open. Now the fastest
+// healthy mirror wins, usually in 1-3s.
+// Replaces: shelf-life-pwa/api/book.js
+
+const FETCH_TIMEOUT_MS = 8000;
+
+const fetchWithTimeout = (url, opts = {}) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { ...opts, signal: ctrl.signal, redirect: "follow" })
+    .finally(() => clearTimeout(t));
+};
 
 export default async function handler(req, res) {
   const id = String(req.query.id || "");
@@ -13,7 +25,6 @@ export default async function handler(req, res) {
     "Accept": "text/plain,*/*",
   };
 
-  // Try these sources in order until one gives us the book
   const sources = [
     `https://www.gutenberg.org/cache/epub/${id}/pg${id}.txt`,
     `https://gutenberg.pglaf.org/cache/epub/${id}/pg${id}.txt`,
@@ -24,22 +35,23 @@ export default async function handler(req, res) {
   const attempts = [];
   let text = null;
 
-  for (const url of sources) {
-    try {
-      const r = await fetch(url, { headers, redirect: "follow" });
-      if (!r.ok) { attempts.push(`${url} -> HTTP ${r.status}`); continue; }
-      const body = await r.text();
-      if (body && body.length > 500) { text = body; break; }
-      attempts.push(`${url} -> too short`);
-    } catch (e) {
-      attempts.push(`${url} -> ${String(e && e.message ? e.message : e)}`);
-    }
-  }
+  // Race every mirror at once — first good response wins, slow ones are ignored
+  const tryUrl = async (url) => {
+    const r = await fetchWithTimeout(url, { headers });
+    if (!r.ok) { attempts.push(`${url} -> HTTP ${r.status}`); throw new Error("bad"); }
+    const body = await r.text();
+    if (!body || body.length <= 500) { attempts.push(`${url} -> too short`); throw new Error("short"); }
+    return body;
+  };
+
+  try {
+    text = await Promise.any(sources.map(tryUrl));
+  } catch { /* all mirrors failed — fall through to Gutendex */ }
 
   // Last resort: ask Gutendex for whatever text URL it knows about
   if (!text) {
     try {
-      const meta = await fetch(`https://gutendex.com/books/${id}`, { headers }).then((r) => r.json());
+      const meta = await fetchWithTimeout(`https://gutendex.com/books/${id}`, { headers }).then((r) => r.json());
       const formats = meta.formats || {};
       const txtUrl =
         formats["text/plain; charset=utf-8"] ||
@@ -47,7 +59,7 @@ export default async function handler(req, res) {
         formats["text/plain; charset=iso-8859-1"] ||
         formats["text/plain"];
       if (txtUrl) {
-        const r = await fetch(txtUrl, { headers, redirect: "follow" });
+        const r = await fetchWithTimeout(txtUrl, { headers });
         if (r.ok) {
           const body = await r.text();
           if (body && body.length > 500) text = body;
@@ -74,6 +86,8 @@ export default async function handler(req, res) {
   if (endMark !== -1) text = text.slice(0, endMark);
   if (text.length > 1_800_000) text = text.slice(0, 1_800_000);
 
-  res.setHeader("Cache-Control", "s-maxage=86400, stale-while-revalidate");
+  // Cache aggressively at the CDN edge — the same book is served instantly
+  // to every reader after the first request (immutable public-domain text).
+  res.setHeader("Cache-Control", "public, s-maxage=2592000, stale-while-revalidate=86400");
   return res.status(200).json({ id, text: text.trim() });
 }
