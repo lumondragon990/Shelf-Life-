@@ -511,20 +511,142 @@ const fetchT = (url, ms = 6000, opts = {}) => {
 // to fully fail (which could take 10s+) before even trying gutendex directly.
 // Genres tuned to what Project Gutenberg's free catalog is actually deep in —
 // so every pill lands on real shelves, not three books and an apology.
+// Each genre carries a hand-picked starter shelf (verified Gutenberg IDs) that
+// renders INSTANTLY — the live catalog is slow to wake and sometimes down, and
+// a kid tapping "Mystery" should never meet an empty page.
 const FREE_GENRES = [
-  ["🔍 Mystery & detective", "detective"],
-  ["🗺️ Adventure", "adventure"],
-  ["🚀 Science fiction", "science fiction"],
-  ["🧛 Gothic & horror", "horror"],
-  ["🐉 Fantasy & myth", "fantasy"],
-  ["💛 Romance", "love"],
-  ["😂 Humor", "humor"],
-  ["📖 Short stories", "short stories"],
-  ["🧒 For young readers", "children"],
-  ["🎭 Poetry & drama", "poetry"],
-  ["📜 History", "history"],
-  ["🧠 Philosophy", "philosophy"],
-  ["🇲🇽 En español", "__es__"],
+  ["🔍 Mystery & detective", "detective", [
+    [1661, "The Adventures of Sherlock Holmes", "Arthur Conan Doyle"],
+    [2852, "The Hound of the Baskervilles", "Arthur Conan Doyle"],
+    [244, "A Study in Scarlet", "Arthur Conan Doyle"],
+    [2097, "The Sign of the Four", "Arthur Conan Doyle"],
+    [834, "The Memoirs of Sherlock Holmes", "Arthur Conan Doyle"],
+    [863, "The Mysterious Affair at Styles", "Agatha Christie"],
+    [1155, "The Secret Adversary", "Agatha Christie"],
+    [155, "The Moonstone", "Wilkie Collins"],
+    [583, "The Woman in White", "Wilkie Collins"],
+  ]],
+  ["🗺️ Adventure", "adventure", [
+    [120, "Treasure Island", "Robert Louis Stevenson"],
+    [1184, "The Count of Monte Cristo", "Alexandre Dumas"],
+    [1257, "The Three Musketeers", "Alexandre Dumas"],
+    [103, "Around the World in Eighty Days", "Jules Verne"],
+    [164, "Twenty Thousand Leagues under the Sea", "Jules Verne"],
+    [215, "The Call of the Wild", "Jack London"],
+    [910, "White Fang", "Jack London"],
+    [2166, "King Solomon's Mines", "H. Rider Haggard"],
+    [521, "Robinson Crusoe", "Daniel Defoe"],
+    [76, "Adventures of Huckleberry Finn", "Mark Twain"],
+    [74, "The Adventures of Tom Sawyer", "Mark Twain"],
+  ]],
+  ["🚀 Science fiction", "science fiction", [
+    [35, "The Time Machine", "H. G. Wells"],
+    [36, "The War of the Worlds", "H. G. Wells"],
+    [5230, "The Invisible Man", "H. G. Wells"],
+    [159, "The Island of Doctor Moreau", "H. G. Wells"],
+    [84, "Frankenstein", "Mary Shelley"],
+    [62, "A Princess of Mars", "Edgar Rice Burroughs"],
+    [32, "Herland", "Charlotte Perkins Gilman"],
+    [1250, "Anthem", "Ayn Rand"],
+    [21279, "2 B R 0 2 B", "Kurt Vonnegut"],
+  ]],
+  ["🧛 Gothic & horror", "horror", [
+    [345, "Dracula", "Bram Stoker"],
+    [84, "Frankenstein", "Mary Shelley"],
+    [43, "The Strange Case of Dr. Jekyll and Mr. Hyde", "Robert Louis Stevenson"],
+    [174, "The Picture of Dorian Gray", "Oscar Wilde"],
+    [209, "The Turn of the Screw", "Henry James"],
+    [932, "The Fall of the House of Usher", "Edgar Allan Poe"],
+    [1064, "The Masque of the Red Death", "Edgar Allan Poe"],
+    [696, "The Castle of Otranto", "Horace Walpole"],
+    [5200, "Metamorphosis", "Franz Kafka"],
+  ]],
+  ["🐉 Fantasy & myth", "fantasy", [
+    [11, "Alice's Adventures in Wonderland", "Lewis Carroll"],
+    [12, "Through the Looking-Glass", "Lewis Carroll"],
+    [16, "Peter Pan", "J. M. Barrie"],
+    [55, "The Wonderful Wizard of Oz", "L. Frank Baum"],
+    [289, "The Wind in the Willows", "Kenneth Grahame"],
+    [2591, "Grimms' Fairy Tales", "Jacob & Wilhelm Grimm"],
+    [1597, "Andersen's Fairy Tales", "Hans Christian Andersen"],
+    [708, "The Princess and the Goblin", "George MacDonald"],
+  ]],
+  ["💛 Romance", "love", [
+    [1342, "Pride and Prejudice", "Jane Austen"],
+    [158, "Emma", "Jane Austen"],
+    [161, "Sense and Sensibility", "Jane Austen"],
+    [105, "Persuasion", "Jane Austen"],
+    [121, "Northanger Abbey", "Jane Austen"],
+    [1260, "Jane Eyre", "Charlotte Brontë"],
+    [768, "Wuthering Heights", "Emily Brontë"],
+    [2641, "A Room with a View", "E. M. Forster"],
+    [4276, "North and South", "Elizabeth Gaskell"],
+    [541, "The Age of Innocence", "Edith Wharton"],
+  ]],
+  ["😂 Humor", "humor", [
+    [308, "Three Men in a Boat", "Jerome K. Jerome"],
+    [86, "A Connecticut Yankee in King Arthur's Court", "Mark Twain"],
+    [3176, "The Innocents Abroad", "Mark Twain"],
+    [844, "The Importance of Being Earnest", "Oscar Wilde"],
+    [1695, "The Man Who Was Thursday", "G. K. Chesterton"],
+    [394, "Cranford", "Elizabeth Gaskell"],
+    [1080, "A Modest Proposal", "Jonathan Swift"],
+  ]],
+  ["📖 Short stories", "short stories", [
+    [1661, "The Adventures of Sherlock Holmes", "Arthur Conan Doyle"],
+    [2814, "Dubliners", "James Joyce"],
+    [236, "The Jungle Book", "Rudyard Kipling"],
+    [2781, "Just So Stories", "Rudyard Kipling"],
+    [1064, "The Masque of the Red Death", "Edgar Allan Poe"],
+    [2591, "Grimms' Fairy Tales", "Jacob & Wilhelm Grimm"],
+  ]],
+  ["🧒 For young readers", "children", [
+    [11, "Alice's Adventures in Wonderland", "Lewis Carroll"],
+    [55, "The Wonderful Wizard of Oz", "L. Frank Baum"],
+    [16, "Peter Pan", "J. M. Barrie"],
+    [113, "The Secret Garden", "Frances Hodgson Burnett"],
+    [45, "Anne of Green Gables", "L. M. Montgomery"],
+    [514, "Little Women", "Louisa May Alcott"],
+    [271, "Black Beauty", "Anna Sewell"],
+    [1448, "Heidi", "Johanna Spyri"],
+    [500, "Pinocchio", "Carlo Collodi"],
+    [236, "The Jungle Book", "Rudyard Kipling"],
+    [289, "The Wind in the Willows", "Kenneth Grahame"],
+  ]],
+  ["🎭 Poetry & drama", "poetry", [
+    [1524, "Hamlet", "William Shakespeare"],
+    [1513, "Romeo and Juliet", "William Shakespeare"],
+    [1533, "Macbeth", "William Shakespeare"],
+    [1041, "Shakespeare's Sonnets", "William Shakespeare"],
+    [844, "The Importance of Being Earnest", "Oscar Wilde"],
+    [1322, "Leaves of Grass", "Walt Whitman"],
+    [1727, "The Odyssey", "Homer"],
+    [6130, "The Iliad", "Homer"],
+    [20, "Paradise Lost", "John Milton"],
+  ]],
+  ["📜 History", "history", [
+    [23, "Narrative of the Life of Frederick Douglass", "Frederick Douglass"],
+    [408, "The Souls of Black Folk", "W. E. B. Du Bois"],
+    [2376, "Up from Slavery", "Booker T. Washington"],
+    [147, "Common Sense", "Thomas Paine"],
+    [1404, "The Federalist Papers", "Hamilton, Madison & Jay"],
+    [132, "The Art of War", "Sun Tzu"],
+    [1232, "The Prince", "Niccolò Machiavelli"],
+    [815, "Democracy in America — Volume 1", "Alexis de Tocqueville"],
+  ]],
+  ["🧠 Philosophy", "philosophy", [
+    [1497, "The Republic", "Plato"],
+    [2680, "Meditations", "Marcus Aurelius"],
+    [205, "Walden", "Henry David Thoreau"],
+    [5827, "The Problems of Philosophy", "Bertrand Russell"],
+    [1998, "Thus Spake Zarathustra", "Friedrich Nietzsche"],
+    [4363, "Beyond Good and Evil", "Friedrich Nietzsche"],
+    [34901, "On Liberty", "John Stuart Mill"],
+    [1232, "The Prince", "Niccolò Machiavelli"],
+  ]],
+  ["🇲🇽 En español", "__es__", [
+    [2000, "Don Quijote", "Miguel de Cervantes"],
+  ]],
 ];
 
 const mapGutendex = (d) => (d.results || []).map((b) => ({
@@ -546,7 +668,7 @@ async function fetchGutenList({ q = "", topic = "", es = false, page = 1 }) {
   directQ.set("languages", es ? "es" : "en,es");
   if (page > 1) directQ.set("page", String(page));
   const attempt = async (url) => {
-    const r = await fetchT(url, 7000);
+    const r = await fetchT(url, 9000);
     if (!r.ok) throw new Error("bad status");
     const out = mapGutendex(await r.json());
     if (!out.length) throw new Error("empty");
@@ -2299,20 +2421,37 @@ Respond with ONLY a JSON object, no markdown:
     if (!q) return;
     setFreeGenre(null);
     setGutenLoading(true);
-    const list = await fetchGutenList({ q });
+    let list = await fetchGutenList({ q });
+    if (!list.length) {
+      await new Promise((r) => setTimeout(r, 1200));
+      list = await fetchGutenList({ q });
+    }
     setGutenResults(list.slice(0, 24));
     setGutenLoading(false);
   };
 
   const browseFreeGenre = async (entry) => {
-    const [label, topic] = entry;
+    const [label, topic, seeds] = entry;
     setFreeGenre(label);
     setGutenQuery("");
     freeGenrePageRef.current[label] = 1;
+    // The starter shelf renders INSTANTLY — no waiting on the catalog
+    const seedBooks = (seeds || []).map(([gid, title, author]) => ({ gid, title, author, cover: null }));
+    setGutenResults(seedBooks);
     setGutenLoading(true);
     const es = topic === "__es__";
-    const list = await fetchGutenList({ topic: es ? "" : topic, es });
-    setGutenResults(list);
+    let list = await fetchGutenList({ topic: es ? "" : topic, es });
+    // The catalog often sleeps through the first request — knock once more
+    if (!list.length) {
+      await new Promise((r) => setTimeout(r, 1200));
+      list = await fetchGutenList({ topic: es ? "" : topic, es });
+    }
+    if (list.length) {
+      setGutenResults((prev) => {
+        const seen = new Set((prev || []).map((x) => x.gid));
+        return [...(prev || []), ...list.filter((x) => !seen.has(x.gid))];
+      });
+    }
     setGutenLoading(false);
   };
 
@@ -2324,7 +2463,11 @@ Respond with ONLY a JSON object, no markdown:
     const page = (freeGenrePageRef.current[freeGenre] || 1) + 1;
     freeGenrePageRef.current[freeGenre] = page;
     const es = g[1] === "__es__";
-    const list = await fetchGutenList({ topic: es ? "" : g[1], es, page });
+    let list = await fetchGutenList({ topic: es ? "" : g[1], es, page });
+    if (!list.length) {
+      await new Promise((r) => setTimeout(r, 1200));
+      list = await fetchGutenList({ topic: es ? "" : g[1], es, page });
+    }
     setGutenResults((prev) => {
       const seen = new Set((prev || []).map((x) => x.gid));
       return [...(prev || []), ...list.filter((x) => !seen.has(x.gid))];
@@ -3593,7 +3736,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v57</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v58</span>
         </p>
       </header>
 
@@ -6627,7 +6770,9 @@ Respond with ONLY a JSON object, no markdown:
             {gutenLoading && !gutenResults && <p style={{ color: T.inkSoft, marginBottom: 16 }}>Finding free books… 📚</p>}
             {gutenResults && (<>
               <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 17, margin: "0 0 10px" }}>
-                {gutenLoading ? "Finding free books… 📚" : freeGenre ? `${freeGenre} — ${gutenResults.length} free books` : `${gutenResults.length} free books found`}
+                {freeGenre
+                  ? `${freeGenre} — ${gutenResults.length} free book${gutenResults.length !== 1 ? "s" : ""}${gutenLoading ? " · finding more…" : ""}`
+                  : gutenLoading ? "Finding free books… 📚" : `${gutenResults.length} free books found`}
               </h3>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginBottom: 8 }}>
                 {gutenResults.length === 0 && !gutenLoading && <p style={{ color: T.inkSoft }}>Nothing found — try an author's last name, or tap a genre above.</p>}
