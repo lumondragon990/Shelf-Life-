@@ -646,6 +646,37 @@ const FREE_GENRES = [
   ]],
   ["🇲🇽 En español", "__es__", [
     [2000, "Don Quijote", "Miguel de Cervantes"],
+    [45438, "La isla del tesoro", "Robert Louis Stevenson"],
+    [69552, "El libro de las tierras vírgenes", "Rudyard Kipling"],
+    [9980, "Platero y yo", "Juan Ramón Jiménez"],
+    [36558, "Ratón Pérez: cuento infantil", "Luis Coloma"],
+    [21143, "Las Fábulas de Esopo, Vol. 1", "Esopo"],
+    [19898, "La Edad de Oro", "José Martí"],
+    [73486, "Corazón", "Edmondo De Amicis"],
+    [62627, "El caso extraño del Doctor Jekyll", "Robert Louis Stevenson"],
+    [46196, "Cuentos Clásicos del Norte", "Edgar Allan Poe"],
+    [13507, "Cuentos de Amor de Locura y de Muerte", "Horacio Quiroga"],
+    [61851, "El crimen y el castigo", "Fiódor Dostoyevski"],
+    [61887, "Una historia de dos ciudades", "Charles Dickens"],
+    [320, "Lazarillo de Tormes", "Anónimo"],
+    [29506, "El sombrero de tres picos", "Pedro Antonio de Alarcón"],
+    [15532, "Novelas Cortas", "Pedro Antonio de Alarcón"],
+    [15725, "Doña Perfecta", "Benito Pérez Galdós"],
+    [17340, "Marianela", "Benito Pérez Galdós"],
+    [17013, "Fortunata y Jacinta", "Benito Pérez Galdós"],
+    [49836, "Niebla", "Miguel de Unamuno"],
+    [60464, "El árbol de la ciencia", "Pío Baroja"],
+    [17073, "La Regenta", "Leopoldo Alas «Clarín»"],
+    [55514, "Cuentos de amor", "Emilia Pardo Bazán"],
+    [24536, "Los cuatro jinetes del apocalipsis", "Vicente Blasco Ibáñez"],
+    [26983, "Sangre y arena", "Vicente Blasco Ibáñez"],
+    [52894, "Azul...", "Rubén Darío"],
+    [72665, "Romancero gitano", "Federico García Lorca"],
+    [68525, "Poesías completas", "Antonio Machado"],
+    [14765, "El Gaucho Martín Fierro", "José Hernández"],
+    [21282, "Tradiciones peruanas", "Ricardo Palma"],
+    [5201, "Don Juan Tenorio", "José Zorrilla"],
+    [47287, "Las mil noches y una noche, t. 1", "Anónimo"],
   ]],
 ];
 
@@ -3736,7 +3767,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v58</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v59</span>
         </p>
       </header>
 
