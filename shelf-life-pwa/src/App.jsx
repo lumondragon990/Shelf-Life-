@@ -509,6 +509,59 @@ const fetchT = (url, ms = 6000, opts = {}) => {
 // Search Gutenberg's catalog. v2: the proxy and the direct call race IN
 // PARALLEL, each with its own timeout — the old version waited for the proxy
 // to fully fail (which could take 10s+) before even trying gutendex directly.
+// Genres tuned to what Project Gutenberg's free catalog is actually deep in —
+// so every pill lands on real shelves, not three books and an apology.
+const FREE_GENRES = [
+  ["🔍 Mystery & detective", "detective"],
+  ["🗺️ Adventure", "adventure"],
+  ["🚀 Science fiction", "science fiction"],
+  ["🧛 Gothic & horror", "horror"],
+  ["🐉 Fantasy & myth", "fantasy"],
+  ["💛 Romance", "love"],
+  ["😂 Humor", "humor"],
+  ["📖 Short stories", "short stories"],
+  ["🧒 For young readers", "children"],
+  ["🎭 Poetry & drama", "poetry"],
+  ["📜 History", "history"],
+  ["🧠 Philosophy", "philosophy"],
+  ["🇲🇽 En español", "__es__"],
+];
+
+const mapGutendex = (d) => (d.results || []).map((b) => ({
+  gid: b.id, title: b.title, author: (b.authors || [])[0]?.name || "",
+  cover: b.formats?.["image/jpeg"] || null, downloads: b.download_count,
+}));
+
+// One fetcher for the whole free library: proxy and gutendex race in
+// parallel with timeouts, so a blocked or slow route never stalls the page.
+async function fetchGutenList({ q = "", topic = "", es = false, page = 1 }) {
+  const proxyQ = new URLSearchParams();
+  if (q) proxyQ.set("q", q);
+  if (topic) proxyQ.set("topic", topic);
+  if (es) proxyQ.set("languages", "es");
+  if (page > 1) proxyQ.set("page", String(page));
+  const directQ = new URLSearchParams();
+  if (q) directQ.set("search", q);
+  if (topic) directQ.set("topic", topic);
+  directQ.set("languages", es ? "es" : "en,es");
+  if (page > 1) directQ.set("page", String(page));
+  const attempt = async (url) => {
+    const r = await fetchT(url, 7000);
+    if (!r.ok) throw new Error("bad status");
+    const out = mapGutendex(await r.json());
+    if (!out.length) throw new Error("empty");
+    return out;
+  };
+  try {
+    return await Promise.any([
+      attempt(`/api/guten?${proxyQ.toString()}`),
+      attempt(`https://gutendex.com/books?${directQ.toString()}`),
+    ]);
+  } catch {
+    return [];
+  }
+}
+
 async function gutenbergLookup(query, topic, page = 1) {
   const parse = (d) => (d.results || []).slice(0, 32).map((b) => ({
     gid: b.id, key: normTitle(b.title), title: b.title, author: (b.authors || [])[0]?.name || "",
@@ -2236,21 +2289,47 @@ Respond with ONLY a JSON object, no markdown:
   };
 
   // ----- Digital shelf: search, add, and read public-domain books -----
+  // ----- Free library: search, browse by genre, dig deeper -----
+  const [freeGenre, setFreeGenre] = useState(null);
+  const freeGenrePageRef = useRef({});
+  const [freeMoreBusy, setFreeMoreBusy] = useState(false);
+
   const searchGutenberg = async (qOverride) => {
     const q = (typeof qOverride === "string" ? qOverride : gutenQuery).trim();
     if (!q) return;
+    setFreeGenre(null);
     setGutenLoading(true);
-    try {
-      const r = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(q)}`);
-      const d = await r.json();
-      setGutenResults((d.results || []).slice(0, 12).map((b) => ({
-        gid: b.id, title: b.title, author: (b.authors || [])[0]?.name || "",
-        cover: b.formats?.["image/jpeg"] || null, downloads: b.download_count,
-      })));
-    } catch {
-      flash("Search hiccup — try again");
-    }
+    const list = await fetchGutenList({ q });
+    setGutenResults(list.slice(0, 24));
     setGutenLoading(false);
+  };
+
+  const browseFreeGenre = async (entry) => {
+    const [label, topic] = entry;
+    setFreeGenre(label);
+    setGutenQuery("");
+    freeGenrePageRef.current[label] = 1;
+    setGutenLoading(true);
+    const es = topic === "__es__";
+    const list = await fetchGutenList({ topic: es ? "" : topic, es });
+    setGutenResults(list);
+    setGutenLoading(false);
+  };
+
+  const loadMoreFree = async () => {
+    if (!freeGenre || freeMoreBusy) return;
+    const g = FREE_GENRES.find(([l]) => l === freeGenre);
+    if (!g) return;
+    setFreeMoreBusy(true);
+    const page = (freeGenrePageRef.current[freeGenre] || 1) + 1;
+    freeGenrePageRef.current[freeGenre] = page;
+    const es = g[1] === "__es__";
+    const list = await fetchGutenList({ topic: es ? "" : g[1], es, page });
+    setGutenResults((prev) => {
+      const seen = new Set((prev || []).map((x) => x.gid));
+      return [...(prev || []), ...list.filter((x) => !seen.has(x.gid))];
+    });
+    setFreeMoreBusy(false);
   };
 
   // ----- Book text cache: a book downloads once, then opens instantly -----
@@ -3514,7 +3593,7 @@ Respond with ONLY a JSON object, no markdown:
         </div>
         <p style={{ margin: "6px 0 0", color: T.inkSoft, fontSize: 15 }}>
           Track your books, find your next one, and talk about them with other readers. Go at your own pace — this is your shelf, not a race.
-          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v55</span>
+          <span style={{ fontSize: 11, opacity: 0.55, marginLeft: 8 }}>v57</span>
         </p>
       </header>
 
@@ -5102,6 +5181,25 @@ Respond with ONLY a JSON object, no markdown:
                     <button style={{ ...ghostBtn, marginTop: 10, padding: "4px 12px", fontSize: 12 }} onClick={() => refreshFamily()}>Refresh ↻</button>
                   </div>
 
+                  {/* ----- Talk to the teacher — front and center, right under progress ----- */}
+                  <div style={{ background: T.card, border: `2px solid ${T.green}`, borderRadius: 14, padding: "14px 16px", marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, letterSpacing: "0.14em", color: T.green, fontWeight: 700 }}>💬 TALK TO THE TEACHER</div>
+                    <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 17, margin: "2px 0 6px" }}>
+                      Send a message to {family.teacher}
+                    </div>
+                    <textarea
+                      style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 64, resize: "vertical", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
+                      placeholder="A question, a heads-up, or how reading is going at home — anything helps…"
+                      maxLength={400} value={famDraft} onChange={(e) => setFamDraft(e.target.value)} />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                      <span style={{ fontSize: 11, color: T.inkSoft }}>{famDraft.length}/400 · goes straight to {family.teacher}'s Shelf Life</span>
+                      <button style={{ ...btn(T.green), padding: "7px 18px", fontSize: 13.5, opacity: famDraft.trim() && !famBusy ? 1 : 0.5 }}
+                        disabled={!famDraft.trim() || famBusy} onClick={sendFromFamily}>
+                        {famBusy ? "Sending…" : "Send ✉️"}
+                      </button>
+                    </div>
+                  </div>
+
                   {family.notice && (
                     <div style={{ background: "#FDF6EE", border: `2px dashed ${T.stamp}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
                       <div style={{ fontSize: 11, letterSpacing: "0.12em", color: T.stamp, fontWeight: 700 }}>📣 NOTE TO THE WHOLE CLASS</div>
@@ -5113,7 +5211,7 @@ Respond with ONLY a JSON object, no markdown:
                     Messages with {family.teacher}
                     {unreadFamily > 0 && <span style={{ fontSize: 12, background: T.stamp, color: "#FFF", borderRadius: 999, padding: "2px 9px", marginLeft: 8 }}>{unreadFamily} new</span>}
                   </h3>
-                  {famMsgs.length === 0 && <p style={{ fontSize: 13.5, color: T.inkSoft }}>No messages yet — say hello below, or notes from {family.teacher} will appear here.</p>}
+                  {famMsgs.length === 0 && <p style={{ fontSize: 13.5, color: T.inkSoft }}>No messages yet — notes from {family.teacher} will appear here, along with anything you send.</p>}
                   {famMsgs.slice().reverse().map((m) => (
                     <div key={m.id} style={{
                       background: m.who === "family" ? "#F0F5F0" : m.at > (famSeen || 0) ? "#F5F8FC" : T.paper,
@@ -5132,21 +5230,6 @@ Respond with ONLY a JSON object, no markdown:
                     </div>
                   ))}
 
-                  {/* Write back to the teacher */}
-                  <div style={{ background: T.card, border: `1.5px solid ${T.rule}`, borderRadius: 10, padding: "10px 12px", marginTop: 4 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>✏️ Write to {family.teacher}</div>
-                    <textarea
-                      style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 60, resize: "vertical", fontFamily: "'Atkinson Hyperlegible', sans-serif" }}
-                      placeholder="A question, a heads-up, or just how reading is going at home…"
-                      maxLength={400} value={famDraft} onChange={(e) => setFamDraft(e.target.value)} />
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-                      <span style={{ fontSize: 11, color: T.inkSoft }}>{famDraft.length}/400</span>
-                      <button style={{ ...btn(T.green), padding: "6px 16px", fontSize: 13, opacity: famDraft.trim() && !famBusy ? 1 : 0.5 }}
-                        disabled={!famDraft.trim() || famBusy} onClick={sendFromFamily}>
-                        {famBusy ? "Sending…" : "Send ✉️"}
-                      </button>
-                    </div>
-                  </div>
 
                   <button style={{ ...btn(T.green), marginTop: 8, opacity: famBusy ? 0.6 : 1 }} disabled={famBusy} onClick={familyDigest}>
                     ✨ This week, and one thing to do tonight
@@ -6525,11 +6608,29 @@ Respond with ONLY a JSON object, no markdown:
                   {gutenLoading ? "Searching…" : "Search"}
                 </button>
               </div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, margin: "6px 0 6px" }}>Or browse the free shelves by genre:</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 6 }}>
+                {FREE_GENRES.map((g) => (
+                  <button key={g[0]} onClick={() => browseFreeGenre(g)} style={{
+                    padding: "6px 13px", borderRadius: 999, fontSize: 12.5, cursor: "pointer", fontWeight: 700,
+                    border: `1.5px solid ${freeGenre === g[0] ? T.green : T.rule}`,
+                    background: freeGenre === g[0] ? T.green : T.card,
+                    color: freeGenre === g[0] ? "#FFF" : T.ink,
+                    fontFamily: "'Atkinson Hyperlegible', sans-serif",
+                  }}>
+                    {g[0]}
+                  </button>
+                ))}
+              </div>
             </Ruled>
 
-            {gutenResults && (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginBottom: 20 }}>
-                {gutenResults.length === 0 && <p style={{ color: T.inkSoft }}>Nothing found — try an author's last name.</p>}
+            {gutenLoading && !gutenResults && <p style={{ color: T.inkSoft, marginBottom: 16 }}>Finding free books… 📚</p>}
+            {gutenResults && (<>
+              <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 17, margin: "0 0 10px" }}>
+                {gutenLoading ? "Finding free books… 📚" : freeGenre ? `${freeGenre} — ${gutenResults.length} free books` : `${gutenResults.length} free books found`}
+              </h3>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginBottom: 8 }}>
+                {gutenResults.length === 0 && !gutenLoading && <p style={{ color: T.inkSoft }}>Nothing found — try an author's last name, or tap a genre above.</p>}
                 {gutenResults.map((b) => (
                   <div key={b.gid} style={{ border: `1px solid ${T.rule}`, borderRadius: 10, padding: 12, background: T.paper, display: "flex", gap: 10 }}>
                     <CoverThumb src={b.cover || gutenCover(b.gid)} title={b.title} />
@@ -6544,7 +6645,15 @@ Respond with ONLY a JSON object, no markdown:
                   </div>
                 ))}
               </div>
-            )}
+              {freeGenre && gutenResults.length > 0 && (
+                <div style={{ textAlign: "center", margin: "8px 0 20px" }}>
+                  <button style={{ ...btn(T.green), opacity: freeMoreBusy ? 0.6 : 1 }} disabled={freeMoreBusy} onClick={loadMoreFree}>
+                    {freeMoreBusy ? "Finding more…" : "Load more free books ↓"}
+                  </button>
+                </div>
+              )}
+              {!freeGenre && <div style={{ marginBottom: 12 }} />}
+            </>)}
 
             {/* Featured classics */}
             <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 17, margin: "0 0 10px" }}>
